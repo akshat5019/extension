@@ -4,6 +4,8 @@ A Chrome / Edge extension for Naukri, LinkedIn, Indeed, and company career sites
 
 ## Build and install
 
+For local testing without build tools, [download the ready-to-install extension ZIP](https://github.com/akshat5019/extension/raw/refs/heads/main/downloads/resume-assist.zip), extract it, then choose the extracted folder containing `manifest.json` using **Load unpacked** in `chrome://extensions` with **Developer mode** enabled. This package is for local installation, not a Chrome Web Store listing.
+
 Requires Node.js 22 or newer and Chrome/Edge 120 or newer.
 
 ```sh
