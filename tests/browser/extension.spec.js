@@ -58,8 +58,8 @@ test.beforeAll(async () => {
     const storage = {};
     await context.exposeBinding('__resumeStorage', (_source, operation, data) => {
       if (operation === 'set') Object.assign(storage, data);
-      if (operation === 'remove') delete storage[data];
-      return data === null || operation !== 'get' ? structuredClone(storage) : { [data]: storage[data] };
+      if (operation === 'remove') for (const key of Array.isArray(data) ? data : [data]) delete storage[key];
+      return data === null || operation !== 'get' ? structuredClone(storage) : Object.fromEntries((Array.isArray(data) ? data : [data]).filter(key => storage[key] !== undefined).map(key => [key, structuredClone(storage[key])]));
     });
     await context.exposeBinding('__resumeTabs', () => [{ id: 1, url: `${url}/fixture` }]);
     await context.exposeBinding('__resumeInject', async () => { await job.addScriptTag({ path: resolve('dist/content.js') }); });
@@ -98,9 +98,9 @@ test('imports a resume, asks for missing answers, fills and preserves existing a
   await expect(popup.locator('#missingFields')).toContainText('authorized to work');
   await expect(job.locator('#firstName')).toHaveValue('Akshat');
   await expect(job.locator('#phone')).toHaveValue('9876543210');
-  const salary = popup.locator('.missing-row').filter({ hasText: 'Expected salary' });
+  const salary = popup.locator('#missingFields .missing-row').filter({ hasText: 'Expected salary' });
   await salary.locator('textarea').fill('1200000');
-  const authorization = popup.locator('.missing-row').filter({ hasText: 'authorized to work' });
+  const authorization = popup.locator('#missingFields .missing-row').filter({ hasText: 'authorized to work' });
   await authorization.locator('select').selectOption('Yes');
   await popup.evaluate(() => document.querySelector('#fillPage').click());
   await expect(popup.locator('#status')).toContainText('Filled 2 fields');
@@ -114,16 +114,74 @@ test('imports a resume, asks for missing answers, fills and preserves existing a
   await expect(job.locator('#consent')).not.toBeChecked();
   expect(await job.evaluate(() => window.submitted)).toBe(false);
   expect(await job.evaluate(() => window.events)).toEqual(['input']);
-  expect(await popup.evaluate(async () => Object.keys(await chrome.storage.local.get(null)))).toEqual(['profile']);
+  expect(await popup.evaluate(async () => Object.keys(await chrome.storage.local.get(null)))).toEqual(['profile', 'savedAnswers']);
+  const remembered = await popup.evaluate(async () => (await chrome.storage.local.get('savedAnswers')).savedAnswers);
+  expect(Object.values(remembered).map(entry => entry.answer)).toEqual(['1200000', 'Yes']);
+});
+
+test('suggests remembered answers after reopening, requires review, and supports opting out', async () => {
+  await job.reload();
+  await popup.reload();
+  await popup.locator('#applyTab').click();
+  await popup.evaluate(() => document.querySelector('#scanPage').click());
+  const salary = popup.locator('#missingFields .missing-row').filter({ hasText: 'Expected salary' });
+  const authorization = popup.locator('#missingFields .missing-row').filter({ hasText: 'authorized to work' });
+  await expect(salary.locator('textarea')).toHaveValue('1200000');
+  await expect(authorization.locator('select')).toHaveValue('Yes');
+  await expect(salary).toContainText('Saved answer — review');
+  await expect(job.locator('#salary')).toHaveValue('');
+  await popup.locator('#rememberAnswers').uncheck();
+  await salary.locator('textarea').fill('1250000');
+  await popup.evaluate(() => document.querySelector('#fillPage').click());
+  await expect(job.locator('#salary')).toHaveValue('1250000');
+  const remembered = await popup.evaluate(async () => (await chrome.storage.local.get('savedAnswers')).savedAnswers);
+  expect(Object.values(remembered).find(entry => entry.label === 'Expected salary').answer).toBe('1200000');
+});
+
+test('saves manually entered portal details without learning existing or autofilled values', async () => {
+  await job.reload();
+  await popup.reload();
+  await popup.locator('#applyTab').click();
+  await popup.evaluate(() => document.querySelector('#scanPage').click());
+  await expect(job.locator('#firstName')).toHaveValue('Akshat');
+  await job.locator('#salary').fill('1350000');
+  await job.locator('#email').fill('updated@example.com');
+  await job.locator('#consent').check();
+  await popup.evaluate(() => document.querySelector('#savePageAnswers').click());
+  await expect(popup.locator('#status')).toContainText('Saved 2 manually entered answers');
+  await popup.reload();
+  await expect(popup.locator('#profile-email')).toHaveValue('updated@example.com');
+  await expect(popup.locator('#savedAnswersList')).toContainText('Expected salary');
+  const remembered = await popup.evaluate(async () => (await chrome.storage.local.get('savedAnswers')).savedAnswers);
+  expect(Object.values(remembered).find(entry => entry.label === 'Expected salary').answer).toBe('1350000');
+  expect(Object.values(remembered).some(entry => /agree|consent|email|first name/i.test(entry.label))).toBe(false);
+  expect(Object.values(remembered)).toHaveLength(2);
+});
+
+test('edits and forgets remembered answers without removing the resume profile', async () => {
+  await popup.reload();
+  const salary = popup.locator('#savedAnswersList .missing-row').filter({ hasText: 'Expected salary' });
+  await salary.locator('textarea').fill('1400000');
+  await popup.locator('#saveRemembered').click();
+  await expect(popup.locator('#status')).toContainText('Remembered answers updated');
+  const authorization = popup.locator('#savedAnswersList .missing-row').filter({ hasText: 'authorized to work' });
+  await authorization.getByRole('button', { name: 'Forget this answer' }).click();
+  await expect(popup.locator('#status')).toContainText('Saved answer removed');
+  await expect(popup.locator('#profile-firstName')).toHaveValue('Akshat');
+  await popup.reload();
+  await expect(popup.locator('#savedAnswersList textarea')).toHaveValue('1400000');
+  expect(await popup.evaluate(async () => Object.values((await chrome.storage.local.get('savedAnswers')).savedAnswers))).toHaveLength(1);
 });
 
 test('retains saved profile across reopening and deletes it on request', async () => {
   await popup.reload();
   await expect(popup.locator('#profile-firstName')).toHaveValue('Akshat');
+  await expect(popup.locator('#savedAnswersList')).toContainText('Expected salary');
   popup.once('dialog', dialog => dialog.accept());
   await popup.locator('#deleteData').click();
   await expect(popup.locator('#profile-firstName')).toHaveValue('');
   expect(await popup.evaluate(async () => await chrome.storage.local.get('profile'))).toEqual({});
+  expect(await popup.evaluate(async () => await chrome.storage.local.get('savedAnswers'))).toEqual({});
 });
 
 test('requires review of imported details and skips fields changed since scanning', async () => {

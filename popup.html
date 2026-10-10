@@ -14,6 +14,7 @@
       <div class="section-heading profile-heading"><h2>Make it yours</h2><span class="step-tag">STEP 2</span></div>
       <p class="muted">Only the details you confirm will be used.</p>
       <form id="profileForm"><div id="profileFields" class="field-grid"></div><button class="primary" type="submit">Save profile <span>→</span></button></form>
+      <div class="profile-heading"><h2>Remembered application answers</h2><p class="muted">Saved for the same question on the same website. Review these suggestions before using them.</p><form id="savedAnswersForm"><div id="savedAnswersList"></div><button id="saveRemembered" type="submit" class="primary" hidden>Save answer changes</button></form></div>
       <button id="deleteData" class="text-button danger">Delete my saved data</button>
     </section>
     <section id="applySection" hidden>
@@ -21,8 +22,10 @@
       <p class="muted">For LinkedIn, Naukri, Indeed and career sites. Fill known details first, then complete the missing answers.</p>
       <label class="check-option"><input id="autoSubmit" type="checkbox"> Submit this application automatically when complete</label>
       <label class="check-option"><input id="allowOptionalBlanks" type="checkbox"> Leave unanswered optional fields blank</label>
+      <label class="check-option"><input id="rememberAnswers" type="checkbox" checked> Remember answers I enter for future applications</label>
       <button id="scanPage" class="primary">Start autofill <span>⌕</span></button>
       <button id="cancelSubmission" class="text-button danger">Cancel automatic submission on this page</button>
+      <button id="savePageAnswers" class="primary" style="margin-top:14px">Save answers entered on page</button>
       <div id="scanSummary" class="scan-summary" hidden></div>
       <form id="answersForm" hidden><div id="missingFields"></div><button id="fillPage" class="primary" type="submit">Fill missing answers &amp; resume <span>→</span></button></form>
       <p class="note">Attach your resume and choose consent options on the portal. Automatic submission pauses for missing or invalid details and shows a cancellable countdown. Use Next / Review manually in multi-step forms, then start autofill again. Custom controls or CAPTCHA may require manual submission.</p>

@@ -18,7 +18,7 @@ General field detection is designed for LinkedIn, Naukri, Indeed and company car
 
 Optional automatic submission is approved separately for each application. It waits for complete, valid details and a recognized final Submit button, then shows a three-second cancellable countdown. Next and Review steps remain manual. Check the portal for its confirmation after a submission attempt.
 
-Your original resume file and extracted text are not saved. Only the profile you review is stored locally in your browser. Resume parsing does not use an external AI service, and no analytics are included. Answers supplied for one application are not saved. Filling a form shares the entered answers with that website.
+Your original resume file and extracted text are not saved. Your reviewed profile and answers you choose to remember are stored locally in your browser. Resume parsing does not use an external AI service, and no analytics are included. Uncheck Remember answers for one-off answers. Use Save answers entered on page to explicitly retain edits you make on a scanned portal form. Saved answers are editable/deletable and appear for review on matching questions on the same website. Passwords, verification codes, attachments and consent choices are not remembered. Filling a form shares the entered answers with that website.
 
 Use Delete my saved data to remove your profile. Browser-local storage is not encrypted by the extension.
 
@@ -34,7 +34,7 @@ Help users complete job applications using their locally reviewed resume profile
 
 ## Data disclosure draft
 
-The extension handles user-supplied resume text, contact information, profile information, and explicit application answers. Parsing runs locally. The reviewed profile is stored locally; original documents and one-off answers are not retained by the extension. Filled answers are shared with the selected job website, including when the user enables automatic submission.
+The extension handles user-supplied resume text, contact information, profile information, and explicit application answers. Parsing runs locally. The reviewed profile and answers the user chooses to remember are stored locally; original documents and opted-out one-off answers are not retained by the extension. Remembered questions are associated with website origins and labels. Filled answers are shared with the selected job website, including when the user enables automatic submission.
 
 Use this description to complete the store's current privacy/data-use questionnaire accurately. Do not claim that the extension never handles personal data. It has no analytics, developer-operated backend, sale of data, or remote executable code.
 

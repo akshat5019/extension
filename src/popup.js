@@ -2,6 +2,7 @@ import { PROFILE_FIELDS, parseResume } from './profile.js';
 import { profileValue } from './forms.js';
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist';
 import mammoth from 'mammoth/mammoth.browser.js';
+import { canRemember, rememberAnswer, suggestedAnswer } from './answers.js';
 
 const $ = id => document.getElementById(id);
 GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('pdf.worker.mjs');
@@ -9,6 +10,8 @@ let profile = {};
 let scan = null;
 let activeTab = null;
 let dirty = false;
+let savedAnswers = {};
+const savedAnswerInputs = new Map();
 const profileInputs = new Map();
 const answerInputs = new Map();
 
@@ -49,6 +52,64 @@ function showProfile() {
 function readProfile() {
   return Object.fromEntries(Array.from(profileInputs, ([key, input]) => [key, input.value.trim()]));
 }
+
+function showSavedAnswers() {
+  $('savedAnswersList').replaceChildren();
+  savedAnswerInputs.clear();
+  for (const [key, entry] of Object.entries(savedAnswers)) {
+    const row = document.createElement('div'); row.className = 'missing-row';
+    const label = document.createElement('label'); label.textContent = `${entry.label} · ${entry.origin}`;
+    const input = document.createElement('textarea'); input.rows = 2; input.value = entry.answer; input.maxLength = 5000;
+    label.append(input);
+    const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'text-button danger'; remove.textContent = 'Forget this answer';
+    remove.onclick = async () => {
+      try { const next = { ...savedAnswers }; delete next[key]; await chrome.storage.local.set({ savedAnswers: next }); savedAnswers = next; showSavedAnswers(); status('Saved answer removed.'); }
+      catch { status('Could not remove this answer. Please try again.', true); }
+    };
+    row.append(label, remove); $('savedAnswersList').append(row); savedAnswerInputs.set(key, input);
+  }
+  $('saveRemembered').hidden = savedAnswerInputs.size === 0;
+  if (!savedAnswerInputs.size) $('savedAnswersList').textContent = 'No application answers saved yet.';
+}
+
+async function saveEnteredAnswers(fields, origin) {
+  let nextAnswers = { ...savedAnswers }, nextProfile = { ...profile }, count = 0;
+  for (const field of fields) {
+    if (!canRemember(field) || !String(field.value || '').trim()) continue;
+    if (PROFILE_FIELDS.some(([key]) => key === field.key)) nextProfile[field.key] = field.options?.find(option => option.value === field.value)?.label || field.value;
+    else nextAnswers = rememberAnswer(nextAnswers, field, field.value, origin);
+    count++;
+  }
+  if (count) {
+    await chrome.storage.local.set({ profile: nextProfile, savedAnswers: nextAnswers });
+    profile = nextProfile; savedAnswers = nextAnswers; showProfile(); showSavedAnswers();
+  }
+  return count;
+}
+
+$('savedAnswersForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  const next = { ...savedAnswers };
+  for (const [key, input] of savedAnswerInputs) {
+    if (!input.value.trim()) delete next[key];
+    else next[key] = { ...next[key], answer: input.value.trim() };
+  }
+  try { await chrome.storage.local.set({ savedAnswers: next }); savedAnswers = next; showSavedAnswers(); status('Remembered answers updated.'); }
+  catch { status('Could not save these changes.', true); }
+});
+
+$('savePageAnswers').addEventListener('click', async () => {
+  $('savePageAnswers').disabled = true;
+  try {
+    if (dirty || JSON.stringify(readProfile()) !== JSON.stringify(Object.fromEntries(PROFILE_FIELDS.map(([key]) => [key, profile[key] || ''])))) throw new Error('Save your profile changes first.');
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+    const entered = await chrome.tabs.sendMessage(tab.id, { type: 'RESUME_MANUAL_ANSWERS' });
+    const count = await saveEnteredAnswers(entered.fields, entered.origin);
+    status(count ? `Saved ${count} manually entered answers for future use in this browser.` : 'No new reusable answers found. Start autofill first, enter details on the portal, then save them here.');
+  } catch (error) { status(error.message || 'Could not save answers from this page.', true); }
+  finally { $('savePageAnswers').disabled = false; }
+});
 
 async function extractResume(file) {
   if (file.size > 10 * 1024 * 1024) throw new Error('Choose a resume smaller than 10 MB.');
@@ -113,11 +174,13 @@ $('profileForm').addEventListener('submit', async event => {
 });
 
 $('deleteData').addEventListener('click', async () => {
-  if (!confirm('Delete your saved profile from this browser?')) return;
+  if (!confirm('Delete your saved profile and remembered application answers from this browser?')) return;
   try {
-    await chrome.storage.local.remove('profile');
+    await chrome.storage.local.remove(['profile', 'savedAnswers']);
     if (activeTab?.id) await chrome.tabs.sendMessage(activeTab.id, { type: 'RESUME_CANCEL' }).catch(() => {});
     profile = {};
+    savedAnswers = {};
+    showSavedAnswers();
     dirty = false;
     showProfile();
     scan = null;
@@ -162,6 +225,11 @@ function renderScan(result) {
         input.append(new Option('Leave blank / fill manually', ''));
         for (const option of field.options) input.append(new Option(option.label, option.value));
       } else { input.rows = 2; input.placeholder = 'Your answer, or leave blank to fill on the portal'; }
+      const suggestion = suggestedAnswer(savedAnswers, field, new URL(activeTab.url).origin);
+      if (suggestion) {
+        input.value = suggestion;
+        const note = document.createElement('p'); note.textContent = 'Saved answer — review it for this application before filling.'; row.append(note);
+      }
       row.append(input);
       answerInputs.set(field.id, input);
     }
@@ -212,13 +280,17 @@ $('answersForm').addEventListener('submit', async event => {
   if (!scan || !activeTab?.id) return;
   $('fillPage').disabled = true;
   try {
+    const unsaved = JSON.stringify(readProfile()) !== JSON.stringify(Object.fromEntries(PROFILE_FIELDS.map(([key]) => [key, profile[key] || ''])));
+    if (dirty || unsaved) throw new Error('Save your profile changes before filling missing answers.');
+    await chrome.tabs.sendMessage(activeTab.id, { type: 'RESUME_CANCEL' });
     const answers = Object.fromEntries(Array.from(answerInputs, ([id, input]) => [id, input.value.trim()]));
     const result = await chrome.tabs.sendMessage(activeTab.id, { type: 'RESUME_FILL', profile, answers });
     if (!result) throw new Error('The page changed. Rescan the application before filling.');
+    const savedCount = $('rememberAnswers').checked ? await saveEnteredAnswers((result.applied || []).filter(field => answers[field.id]), new URL(activeTab.url).origin) : 0;
     scan = await chrome.tabs.sendMessage(activeTab.id, { type: 'RESUME_SCAN' });
     renderScan(scan);
     const submissionStatus = await armSubmission();
-    status(`Filled ${result.filled} fields. ${result.manual.length} still need manual entry; ${result.skipped} existing or unavailable fields left unchanged.${submissionStatus || ' Review the portal and submit manually, or enable automatic submission and resume.'}`);
+    status(`Filled ${result.filled} fields.${savedCount ? ` Saved ${savedCount} answers for future use.` : ''} ${result.manual.length} still need manual entry; ${result.skipped} existing or unavailable fields left unchanged.${submissionStatus || ' Review the portal and submit manually, or enable automatic submission and resume.'}`);
   } catch (error) { status(error.message || 'The page changed. Rescan the application before filling.', true); }
   finally { $('fillPage').disabled = false; }
 });
@@ -226,9 +298,11 @@ $('answersForm').addEventListener('submit', async event => {
 async function initialize() {
   try {
     await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
-    const saved = await chrome.storage.local.get('profile');
+    const saved = await chrome.storage.local.get(['profile', 'savedAnswers']);
     profile = saved.profile || {};
+    savedAnswers = saved.savedAnswers || {};
     showProfile();
+    showSavedAnswers();
   } catch { status('Could not load your saved profile.', true); }
 }
 initialize();

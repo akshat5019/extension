@@ -1,8 +1,10 @@
 {
   "name": "resume-assist",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
-  "engines": { "node": ">=22" },
+  "engines": {
+    "node": ">=22"
+  },
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
