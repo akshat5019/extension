@@ -20,7 +20,7 @@ export function classifyField(text, autocomplete = '', type = '') {
     ['linkedin', /linked\s?in/], ['github', /github/], ['website', /\b(website|portfolio|personal url)\b/],
     ['postalCode', /\b(zip|postal|pin code|pincode)\b/], ['city', /\b(city|town)\b/],
     ['state', /\b(state|province|region)\b/], ['country', /\bcountry\b/],
-    ['address', /\b(street address|address line 1|address1)\b|^address$/],
+    ['address', /\b(street address|home address|residential address|address line 1|address1)\b|^address$/],
     ['currentCompany', /\b(current company|current employer|company name|employer name)\b/],
     ['jobTitle', /\b(current title|current job title|job title|position title)\b/],
     ['school', /\b(school|university|college|institution)\b/], ['degree', /\bdegree\b/], ['skills', /\bskills\b/],

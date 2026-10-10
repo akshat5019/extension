@@ -1,6 +1,6 @@
 import { collectFields, describeField, fieldValue, profileValue, writeField, isRequired } from './forms.js';
 import { findScope, watchSubmission } from './submission.js';
-import { isResumeUpload } from './portal.js';
+import { isResumeUpload, isApplicationScope } from './portal.js';
 
 if (!globalThis.__resumeAssistInstalled) {
   globalThis.__resumeAssistInstalled = true;
@@ -19,7 +19,11 @@ if (!globalThis.__resumeAssistInstalled) {
     return { label, key, manual, options, type: element.type, required: isRequired(element), current: fieldValue(element), valid: (!element.willValidate || element.checkValidity()) && element.getAttribute('aria-invalid') !== 'true' };
   };
   for (const event of ['input', 'change']) document.addEventListener(event, event => {
-    if (event.isTrusted && [...scanned.values()].some(previous => previous.element === event.target && previous.label === describeField(event.target).label)) manualEdits.set(event.target, { ...fieldInfo(event.target), url: location.href });
+    if (event.isTrusted && [...scanned.values()].some(previous => previous.element === event.target && previous.label === describeField(event.target).label)) {
+      const field = fieldInfo(event.target);
+      manualEdits.set(event.target, { ...field, url: location.href });
+      if (event.type === 'change' && field.valid && field.current) chrome.runtime.sendMessage({ type: 'PORTAL_SAVE_MANUAL', url: location.href, field, value: field.current }).catch(() => {});
+    }
   }, true);
   function scanFields(preferredScope) {
     submission?.stop(); submission = null;
@@ -58,7 +62,7 @@ if (!globalThis.__resumeAssistInstalled) {
       const style = document.createElement('style'); style.textContent = ':host{position:fixed;bottom:20px;left:20px;z-index:2147483647;width:340px;font:13px system-ui;color:#203831}section{padding:16px;background:#f0f5ed;border:1px solid #acc79e;border-radius:12px;box-shadow:0 5px 30px #0003}p{line-height:1.5;margin:8px 0}button{background:#284f3e;color:white;border:0;border-radius:6px;padding:8px 12px;cursor:pointer}';
       const box = document.createElement('section'), title = document.createElement('strong'), message = document.createElement('p'), close = document.createElement('button');
       title.textContent = 'Resume Assist · portal upload'; close.textContent = 'Stop / dismiss';
-      close.onclick = () => { uploadGeneration++; clearInterval(uploadTimer); host.remove(); };
+      close.onclick = () => { automaticStopped = true; uploadGeneration++; clearInterval(uploadTimer); host.remove(); };
       box.append(title, message, close); shadow.append(style, box); document.documentElement.append(host);
       uploadPanel = { host, message };
     }
@@ -90,13 +94,37 @@ if (!globalThis.__resumeAssistInstalled) {
         filled += fillFields(response.profile).filled;
         const missing = scannedPage.fields.filter(field => !fieldValue(scanned.get(field.id).element)).length;
         uploadNotice(`Filled ${filled} details from your portal resume. ${missing} fields still need your attention. Review the form; use Resume Assist for missing answers. Automatic submission needs separate approval.`, 'complete');
-        if (Date.now() >= until) clearInterval(uploadTimer);
+        if (Date.now() >= until) { clearInterval(uploadTimer); uploadTimer = null; }
       };
       fill(); uploadTimer = setInterval(fill, 500);
     } catch (error) {
       if (generation === uploadGeneration) uploadNotice(error.message || 'Could not read the attached resume. Enter details manually.', 'error');
     }
   }, true);
+  let automaticScope = null, automaticUrl = '', automaticFields = new Set(), automaticBusy = false, automaticStopped = false;
+  let automaticTimer;
+  async function reuseProfile() {
+    if (automaticBusy || automaticStopped || submission || uploadTimer) return;
+    const candidate = findScope(document);
+    if (!isApplicationScope(candidate)) return;
+    const fields = collectFields(document).filter(element => candidate.contains(element));
+    if (candidate === automaticScope && automaticUrl === location.href && fields.every(element => automaticFields.has(element))) return;
+    automaticBusy = true;
+    const url = location.href;
+    try {
+      const result = await chrome.runtime.sendMessage({ type: 'PORTAL_PROFILE', url });
+      if (!result?.profile || location.href !== url || !candidate.isConnected || submission || automaticStopped) return;
+      automaticScope = candidate; automaticUrl = url; automaticFields = new Set(fields);
+      scanFields(candidate);
+      const filled = fillFields(result.profile).filled;
+      const missing = [...scanned.values()].filter(({element}) => !fieldValue(element)).length;
+      uploadNotice(`Filled ${filled} saved details. ${missing ? `Paused: complete ${missing} missing fields manually.` : 'Review your application.'} Valid manual answers are remembered when you leave a field if remembering is enabled.`, 'complete');
+    } catch { /* Disabled portals and unavailable workers leave the form untouched. */ }
+    finally { automaticBusy = false; }
+  }
+  new MutationObserver(() => { clearTimeout(automaticTimer); automaticTimer = setTimeout(reuseProfile, 300); }).observe(document.documentElement, { childList: true, subtree: true });
+  reuseProfile();
+  setInterval(reuseProfile, 1500);
   chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (sender.id !== chrome.runtime.id) return;
     if (message.type === 'RESUME_MANUAL_ANSWERS') {
@@ -105,10 +133,10 @@ if (!globalThis.__resumeAssistInstalled) {
       respond({ fields, origin: location.origin }); return;
     }
     if (message.type === 'RESUME_CANCEL') {
-      submission?.stop(); submission = null; uploadGeneration++; clearInterval(uploadTimer); respond({ cancelled: true }); return;
+      automaticStopped = true; submission?.stop(); submission = null; uploadGeneration++; clearInterval(uploadTimer); respond({ cancelled: true }); return;
     }
     if (message.type === 'RESUME_SCAN') {
-      uploadGeneration++; clearInterval(uploadTimer);
+      automaticStopped = true; uploadGeneration++; clearInterval(uploadTimer);
       respond(scanFields());
     }
     if (message.type === 'RESUME_FILL') {

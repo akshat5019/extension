@@ -374,3 +374,30 @@ test('an older upload cannot replace a newer resume draft', async () => {
   const drafts = await popup.evaluate(() => chrome.storage.session.get(null));
   expect(Object.values(drafts)[0].profile.email).toBe('newer@example.com');
 });
+
+test('reuses saved contacts on application open and remembers trusted valid manual edits', async () => {
+  await popup.evaluate(() => chrome.storage.local.set({ profile: { firstName: 'Saved', email: 'saved@example.com', address: '12 Lake Road' }, rememberAnswers: true }));
+  await job.reload();
+  await job.evaluate(() => {
+    document.querySelector('#secret').remove();
+    const label = document.createElement('label'); label.textContent = 'Home address';
+    const input = document.createElement('input'); input.id = 'address'; label.append(input); document.querySelector('form').append(label);
+  });
+  await popup.locator('#enablePortal').click();
+  await expect(job.locator('#firstName')).toHaveValue('Saved');
+  await expect(job.locator('#address')).toHaveValue('12 Lake Road');
+  await expect(job.locator('#email')).toHaveValue('existing@example.com');
+  await job.locator('#phone').fill('9876543210'); await job.locator('#salary').click();
+  await expect.poll(() => popup.evaluate(async () => (await chrome.storage.local.get('profile')).profile.phone)).toBe('9876543210');
+  await job.locator('#email').fill('invalid'); await job.locator('#salary').click();
+  expect(await popup.evaluate(async () => (await chrome.storage.local.get('profile')).profile.email)).toBe('saved@example.com');
+  await job.locator('#email').fill('manual@example.com'); await job.locator('#salary').click();
+  await expect.poll(() => popup.evaluate(async () => (await chrome.storage.local.get('profile')).profile.email)).toBe('manual@example.com');
+  await popup.evaluate(() => chrome.storage.local.set({ rememberAnswers: false }));
+  await job.locator('#phone').fill('1111111111'); await job.locator('#salary').click();
+  expect(await popup.evaluate(async () => (await chrome.storage.local.get('profile')).profile.phone)).toBe('9876543210');
+  await job.reload(); await job.evaluate(() => document.querySelector('#secret').remove());
+  await popup.locator('#enablePortal').click();
+  await expect(job.locator('#phone')).toHaveValue('9876543210');
+  expect(await job.evaluate(() => window.submitted)).toBe(false);
+});

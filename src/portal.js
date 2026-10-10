@@ -10,3 +10,10 @@ export function isResumeUpload(element, file) {
   const text = [...Array.from(element.labels || [], label => label.textContent), labelled, nearby, element.getAttribute('aria-label'), element.name, element.id, file.name].filter(Boolean).join(' ');
   return /resume|résumé|curriculum|\bcv\b/i.test(text) && !/cover.?letter|passport|identity|certificate/i.test(text);
 }
+
+export function isApplicationScope(scope) {
+  if (!scope || scope.querySelector('input[type="password"]')) return false;
+  const text = `${scope.getAttribute('aria-label') || ''} ${scope.textContent || ''}`;
+  const resume = [...scope.querySelectorAll('input[type="file"]')].some(input => isResumeUpload(input, { name: 'attachment.pdf' }));
+  return resume || /(?:submit|send|complete|finish|job) application|apply (?:for|to) (?:this |a |the )?(?:job|position)/i.test(text);
+}

@@ -30,7 +30,7 @@ export function parseResume(text) {
     profile.firstName = words.shift();
     profile.lastName = words.join(' ');
   }
-  for (const [key, label] of [ ['city', 'city'], ['state', 'state|province'], ['country', 'country'], ['postalCode', 'zip|postal code'], ['currentCompany', 'current company'], ['jobTitle', 'current (?:job )?title'], ['school', 'school|university'], ['degree', 'degree'], ['skills', 'skills'], ['website', 'website|portfolio'] ]) {
+  for (const [key, label] of [ ['address', '(?:home |street |residential )?address'], ['city', 'city'], ['state', 'state|province'], ['country', 'country'], ['postalCode', 'zip|postal code'], ['currentCompany', 'current company'], ['jobTitle', 'current (?:job )?title'], ['school', 'school|university'], ['degree', 'degree'], ['skills', 'skills'], ['website', 'website|portfolio'] ]) {
     const match = text.match(new RegExp(`^(?:${label})\\s*:\\s*(.+)$`, 'im'));
     if (match) profile[key] = match[1].trim();
   }

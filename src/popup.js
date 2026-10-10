@@ -293,7 +293,8 @@ $('answersForm').addEventListener('submit', async event => {
 async function initialize() {
   try {
     await chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
-    const saved = await chrome.storage.local.get(['profile', 'savedAnswers']);
+    const saved = await chrome.storage.local.get(['profile', 'savedAnswers', 'rememberAnswers']);
+    $('rememberAnswers').checked = saved.rememberAnswers !== false;
     profile = saved.profile || {};
     savedAnswers = saved.savedAnswers || {};
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -308,3 +309,5 @@ async function initialize() {
   } catch { status('Could not load your saved profile.', true); }
 }
 initialize();
+
+$('rememberAnswers').addEventListener('change', () => chrome.storage.local.set({ rememberAnswers: $('rememberAnswers').checked }));

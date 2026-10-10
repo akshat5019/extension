@@ -12,3 +12,8 @@ test('leaves ambiguous name and employer blank, accepts Indian mobile without sp
   assert.equal(profile.currentCompany, undefined);
   assert.equal(profile.phone, '9876543210');
 });
+
+test('extracts an explicitly labelled home address without guessing a street', () => {
+  assert.equal(parseResume('Alex Sharma\nHome address: 12 Lake Road\nCity: Pune').address, '12 Lake Road');
+  assert.equal(parseResume('Alex Sharma\n12 Lake Road').address, undefined);
+});
