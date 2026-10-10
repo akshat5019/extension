@@ -1,403 +1,713 @@
-import { test, expect, chromium } from '@playwright/test';
-import { cp, mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-import { createServer } from 'node:http';
-
-let context, popup, job, server, temporary, background, parser;
-const useExtension = process.env.RESUME_TEST_EXTENSION === '1';
-const fixture = `<!doctype html><title>Application fixture</title><h1>Apply</h1><form>
-<label>First name<input id="firstName" name="firstName"></label>
-<label>Last name<input id="lastName" name="lastName"></label>
-<label>Email address<input id="email" type="email" value="existing@example.com"></label>
-<label>Mobile number<input id="phone" type="tel"></label>
-<label>Country<select id="country"><option value="">Choose</option><option value="IN">India</option></select></label>
-<label>Expected salary<input id="salary" required></label>
-<label>Are you authorized to work in this country?<select id="authorized"><option value="">Choose</option><option>Yes</option><option>No</option></select></label>
-<label>Resume<input id="attachment" type="file"></label>
-<label>I agree to terms<input id="consent" type="checkbox"></label>
-<input id="secret" type="password"><input id="hidden" type="hidden"><input id="invisible" style="display:none">
-<button type="submit">Submit application</button></form>
-<script>window.submitted=false;document.querySelector('form').addEventListener('submit',e=>{e.preventDefault();window.submitted=true});window.events=[];document.querySelector('#firstName').addEventListener('input',()=>window.events.push('input'));</script>`;
-
-test.beforeAll(async () => {
-  server = createServer(async (req, res) => {
-    const path = new URL(req.url, 'http://localhost').pathname;
-    if (path === '/fixture') { res.setHeader('Content-Type', 'text/html'); res.end(fixture); return; }
-    if (path === '/background-runner') { res.setHeader('Content-Type', 'text/html'); res.end('<script src="background.js"></script>'); return; }
-    try {
-      const file = join(resolve('dist'), path === '/' ? 'popup.html' : path.slice(1));
-      res.setHeader('Content-Type', path.endsWith('.js') || path.endsWith('.mjs') ? 'application/javascript' : path.endsWith('.css') ? 'text/css' : path.endsWith('.bcmap') ? 'application/octet-stream' : 'text/html');
-      res.setHeader('Content-Security-Policy', "script-src 'self'; object-src 'self'");
-      res.end(await readFile(file));
-    } catch { res.writeHead(404); res.end(); }
+import { test, expect, chromium } from "@playwright/test";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { createServer } from "node:http";
+import { PDFDocument, StandardFonts } from "pdf-lib";
+import ExcelJS from "exceljs";
+let server, context, background, popup, job, temporary, url;
+const fixture = `<!doctype html><title>Registration</title><h1>Register</h1><form>
+<label>Full Name<input id="name"></label><label>Mobile Number<input id="phone" type="tel"></label><label>Email Address<input id="email" type="email"></label><label>Home Address<textarea id="address" required></textarea></label><label>Country<select id="country"><option value="">Choose</option><option value="IN">India</option><option value="US">United States</option></select></label>
+<label>Date of birth<input id="dob" type="date"></label><fieldset><legend>Preferred contact</legend><label>Phone<input type="radio" name="contact" value="phone"></label><label>Email<input type="radio" name="contact" value="email"></label></fieldset><label>I agree to terms<input type="checkbox" id="consent"></label><label>Bank account number<input id="bank"></label><input type="password" id="password"><button type="submit">Submit</button></form><script>window.submitted=false;document.querySelector('form').addEventListener('submit',e=>{e.preventDefault();window.submitted=true});</script>`;
+async function setupContext() {
+  context = await chromium.launchPersistentContext(temporary, {
+    headless: true,
+    executablePath: process.env.CHROMIUM_PATH || "/usr/bin/chromium",
+    args: ["--no-sandbox"],
+    viewport: { width: 1100, height: 900 },
   });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  const url = `http://127.0.0.1:${server.address().port}`;
-  temporary = await mkdtemp(join(tmpdir(), 'resume-assist-test-'));
-  const extensionPath = join(temporary, 'extension');
-  if (useExtension) await cp(resolve('dist'), extensionPath, { recursive: true });
-  // Headless Chromium has no clickable toolbar. Grant only the local fixture host
-  // in this temporary test copy; the shipped manifest retains activeTab only.
-  if (useExtension) {
-    const manifest = JSON.parse(await readFile(join(extensionPath, 'manifest.json'), 'utf8'));
-    manifest.host_permissions = [`${url}/*`];
-    await writeFile(join(extensionPath, 'manifest.json'), JSON.stringify(manifest));
-  }
-  context = await chromium.launchPersistentContext(join(temporary, 'browser'), {
-    executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium', channel: 'chromium', headless: true,
-    ignoreDefaultArgs: ['--disable-extensions'],
-    args: [...(useExtension ? [`--disable-extensions-except=${extensionPath}`, `--load-extension=${extensionPath}`] : []), '--no-sandbox'],
+  const local = {},
+    session = {},
+    permissions = new Set();
+  await context.exposeBinding("__runtime", async ({ page }, message) => {
+    const sender = {
+      id: "test-extension",
+      url: page.url(),
+      ...(page === job ? { tab: { id: 1 }, frameId: 0 } : {}),
+    };
+    return background.evaluate(
+      ({ message, sender }) =>
+        new Promise((resolve) => {
+          let waiting = false,
+            answered = false;
+          const respond = (v) => {
+            answered = true;
+            resolve(v);
+          };
+          for (const listener of window.__listeners)
+            if (listener(message, sender, respond) === true) waiting = true;
+          if (!waiting && !answered) resolve(undefined);
+        }),
+      { message, sender },
+    );
   });
-  let popupUrl = url;
-  if (useExtension) {
-    const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker', { timeout: 10000 });
-    popupUrl = `chrome-extension://${worker.url().split('/')[2]}/popup.html`;
-  } else {
-    // Browser integration mode exercises the actual bundles and DOM under CSP.
-    // Only Chrome's APIs are adapted; this does not test extension permissions.
-    const stores = { local: {}, session: {} }, permissions = new Set(), scripts = new Map();
-    await context.exposeBinding('__resumeStorage', async (_source, area, operation, data) => {
-      const storage = stores[area];
-      const before = structuredClone(storage);
-      if (operation === 'set') Object.assign(storage, data);
-      if (operation === 'remove') for (const key of Array.isArray(data) ? data : [data]) delete storage[key];
-      if (operation === 'clear') for (const key of Object.keys(storage)) delete storage[key];
-      if (operation !== 'get') {
-        const changes = Object.fromEntries([...new Set([...Object.keys(before), ...Object.keys(storage)])].filter(key => JSON.stringify(before[key]) !== JSON.stringify(storage[key])).map(key => [key, { oldValue: before[key], newValue: storage[key] }]));
-        await Promise.all(context.pages().map(page => page.evaluate(({ changes, area }) => {
-          for (const listener of globalThis.__resumeStorageListeners || []) listener(changes, area);
-        }, { changes, area }).catch(() => {})));
-      }
-      return data === null || operation !== 'get' ? structuredClone(storage) : Object.fromEntries((Array.isArray(data) ? data : [data]).filter(key => storage[key] !== undefined).map(key => [key, structuredClone(storage[key])]));
-    });
-    await context.exposeBinding('__resumeTabs', () => [{ id: 1, url: job?.url() || `${url}/fixture` }]);
-    await context.exposeBinding('__resumePermissions', (_source, operation, data) => {
-      if (operation === 'request') data.origins.forEach(origin => permissions.add(origin));
-      if (operation === 'remove') data.origins.forEach(origin => permissions.delete(origin));
-      return operation === 'contains' ? data.origins.every(origin => permissions.has(origin)) : true;
-    });
-    await context.exposeBinding('__resumeScripts', (_source, operation, data) => {
-      if (operation === 'register') data.forEach(script => scripts.set(script.id, script));
-      if (operation === 'unregister') data.ids.forEach(id => scripts.delete(id));
-      return [...scripts.values()].filter(script => !data.ids || data.ids.includes(script.id));
-    });
-    await context.exposeBinding('__resumeOffscreen', async (_source, operation) => {
-      if (operation === 'has') return !!parser;
-      parser = await context.newPage(); await parser.goto(`${url}/offscreen.html`);
-    });
-    const deliver = (page, message, sender) => page.evaluate(({ message, sender }) => new Promise(resolve => {
-      let waiting = false, answered = false;
-      const respond = value => { answered = true; resolve(value); };
-      for (const listener of globalThis.__resumeListeners) if (listener(message, sender, respond) === true) waiting = true;
-      if (!waiting && !answered) resolve(undefined);
-    }), { message, sender });
-    await context.exposeBinding('__resumeRuntime', async ({ page }, message) => {
-      const sender = { id: 'test-extension', ...(page === job ? { tab: { id: 1 }, frameId: 0, url: job.url() } : {}) };
-      return deliver(message.type === 'OFFSCREEN_PARSE_RESUME' ? parser : background, message, sender);
-    });
-    await context.exposeBinding('__resumeInject', async () => { await job.addScriptTag({ path: resolve('dist/content.js') }); });
-    await context.exposeBinding('__resumeMessage', async (_source, message) => job.evaluate(message => new Promise(resolve => {
-      for (const listener of globalThis.__resumeListeners) listener(message, { id: 'test-extension' }, resolve);
-    }), message));
-    await context.addInitScript(({ url }) => {
-      globalThis.__resumeListeners = [];
-      globalThis.__resumeStorageListeners = [];
-      const runtime = { id: 'test-extension', getURL: path => `${url}/${path}`, onMessage: { addListener: listener => globalThis.__resumeListeners.push(listener) }, onInstalled: { addListener: () => {} }, sendMessage: message => window.__resumeRuntime(message) };
-      const storage = Object.fromEntries(['local', 'session'].map(area => [area, { get: keys => window.__resumeStorage(area, 'get', keys), set: data => window.__resumeStorage(area, 'set', data), remove: key => window.__resumeStorage(area, 'remove', key), clear: () => window.__resumeStorage(area, 'clear'), setAccessLevel: async () => {} }]));
-      storage.onChanged = { addListener: listener => globalThis.__resumeStorageListeners.push(listener) };
-      Object.assign(window.chrome, { runtime, storage, permissions: { request: data => window.__resumePermissions('request', data), contains: data => window.__resumePermissions('contains', data), remove: data => window.__resumePermissions('remove', data) }, offscreen: { hasDocument: () => window.__resumeOffscreen('has'), createDocument: () => window.__resumeOffscreen('create') }, tabs: { query: () => window.__resumeTabs(), get: async () => (await window.__resumeTabs())[0], onRemoved: { addListener: () => {} }, sendMessage: (_id, message) => window.__resumeMessage(message) }, scripting: { executeScript: () => window.__resumeInject(), getRegisteredContentScripts: data => window.__resumeScripts('get', data), registerContentScripts: data => window.__resumeScripts('register', data), unregisterContentScripts: data => window.__resumeScripts('unregister', data) } });
-    }, { url });
-    background = await context.newPage(); await background.goto(`${url}/background-runner`);
-  }
+  await context.exposeBinding("__storage", async (_s, area, action, data) => {
+    const store = area === "local" ? local : session;
+    if (action === "get")
+      return Object.fromEntries(
+        (typeof data === "string"
+          ? [data]
+          : Array.isArray(data)
+            ? data
+            : Object.keys(store)
+        )
+          .filter((k) => k in store)
+          .map((k) => [k, store[k]]),
+      );
+    if (action === "set") Object.assign(store, data);
+    if (action === "remove")
+      for (const k of Array.isArray(data) ? data : [data]) delete store[k];
+    if (action === "clear") for (const k of Object.keys(store)) delete store[k];
+  });
+  await context.exposeBinding("__permissions", async (_s, action, origins) => {
+    if (action === "getAll") return { origins: [...permissions] };
+    if (action === "request") {
+      origins.forEach((x) => permissions.add(x));
+      return true;
+    }
+    if (action === "remove") {
+      origins.forEach((x) => permissions.delete(x));
+      return true;
+    }
+    return origins.every((x) => permissions.has(x));
+  });
+  await context.exposeBinding("__tabs", async () => [
+    { id: 1, url: job?.url() },
+  ]);
+  await context.exposeBinding("__inject", async () => {
+    await job.addScriptTag({ path: resolve("dist/content.js") });
+  });
+  await context.exposeBinding("__message", async (_s, message) =>
+    job.evaluate(
+      (message) =>
+        new Promise((resolve) => {
+          let handled = false;
+          for (const listener of window.__listeners) {
+            listener(
+              message,
+              { id: "test-extension", url: "http://extension/popup.html" },
+              (v) => {
+                handled = true;
+                resolve(v);
+              },
+            );
+          }
+          if (!handled) resolve(undefined);
+        }),
+      message,
+    ),
+  );
+  await context.addInitScript(
+    ({ url }) => {
+      window.__listeners = [];
+      const runtime = {
+        id: "test-extension",
+        getURL: (path) => `${url}/${path}`,
+        onMessage: { addListener: (f) => window.__listeners.push(f) },
+        onInstalled: { addListener: () => {} },
+        sendMessage: (m) => window.__runtime(m),
+      };
+      Object.assign(window.chrome, {
+        runtime,
+        storage: Object.fromEntries(
+          ["local", "session"].map((area) => [
+            area,
+            {
+              get: (data) => window.__storage(area, "get", data),
+              set: (data) => window.__storage(area, "set", data),
+              remove: (data) => window.__storage(area, "remove", data),
+              clear: () => window.__storage(area, "clear"),
+              setAccessLevel: async () => {},
+            },
+          ]),
+        ),
+        permissions: {
+          getAll: () => window.__permissions("getAll", []),
+          request: ({ origins }) => window.__permissions("request", origins),
+          remove: ({ origins }) => window.__permissions("remove", origins),
+        },
+        tabs: {
+          query: () => window.__tabs(),
+          create: async () => {},
+          sendMessage: (_id, message) => window.__message(message),
+        },
+        scripting: {
+          executeScript: () => window.__inject(),
+          getRegisteredContentScripts: async () => [],
+          unregisterContentScripts: async () => {},
+        },
+      });
+    },
+    { url },
+  );
+  background = await context.newPage();
+  await background.goto(`${url}/background-runner`);
   job = await context.newPage();
   await job.goto(`${url}/fixture`);
   popup = await context.newPage();
-  await popup.goto(popupUrl);
-});
-
-async function portalUpload(file) {
-  await popup.locator('#enablePortal').click();
-  await expect(popup.locator('#status')).toContainText('Enabled on this portal');
-  if (typeof file !== 'string') {
-    const path = join(temporary, file.name);
-    await writeFile(path, file.buffer);
-    file = path;
-  }
-  // A native filesystem selection produces a trusted change event. Playwright's
-  // in-memory payload path dispatches synthetic events, deliberately ignored.
-  await job.locator('#attachment').setInputFiles(file);
-  await expect(job.locator('#resume-assist-upload')).toHaveAttribute('data-state', 'complete');
-  await expect(popup.locator('#fileInfo')).toContainText('Resume read from this portal upload');
-  await popup.reload();
+  await popup.goto(`${url}/popup.html`);
 }
+test.beforeAll(async () => {
+  temporary = await mkdtemp(join(tmpdir(), "personal-browser-"));
+  server = createServer(async (req, res) => {
+    const path = new URL(req.url, "http://localhost").pathname;
+    if (path === "/fixture") {
+      res.setHeader("Content-Type", "text/html");
+      res.end(fixture);
+      return;
+    }
+    if (path === "/background-runner") {
+      res.setHeader("Content-Type", "text/html");
+      res.end('<script src="background.js"></script>');
+      return;
+    }
+    try {
+      const bytes = await readFile(join(resolve("dist"), path.slice(1)));
+      res.setHeader(
+        "Content-Type",
+        path.endsWith(".js") || path.endsWith(".mjs")
+          ? "application/javascript"
+          : path.endsWith(".css")
+            ? "text/css"
+            : "text/html",
+      );
+      res.setHeader(
+        "Content-Security-Policy",
+        "script-src 'self'; object-src 'self'",
+      );
+      res.end(bytes);
+    } catch {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  url = `http://127.0.0.1:${server.address().port}`;
+  await setupContext();
+});
+test.beforeEach(async () => {
+  await popup.evaluate(async () => {
+    const r = await chrome.runtime.sendMessage({ type: "DB_CLEAR" });
+    if (r.error) throw new Error(r.error);
+  });
+  await job.goto(`${url}/fixture`);
+  await popup.reload();
+});
 test.afterAll(async () => {
   await context?.close();
-  if (server) await new Promise(resolve => server.close(resolve));
+  if (server) await new Promise((r) => server.close(r));
   if (temporary) await rm(temporary, { recursive: true, force: true });
 });
+const csv =
+  "Name,Email,Phone,Country,Date of birth,Preferred contact\nRahul Sharma,rahul@example.com,9876543210,India,1990-02-03,phone\nPriya Sharma,priya@example.com,9123456789,India,1992-01-01,email";
+async function upload(name, bytes) {
+  await popup.getByRole("button", { name: "Import", exact: true }).click();
+  await popup.getByLabel("Upload document").setInputFiles({
+    name,
+    mimeType: "application/octet-stream",
+    buffer: Buffer.from(bytes),
+  });
+  await expect(popup.locator("#status")).toContainText("candidate profiles");
+}
+async function confirmImport() {
+  await popup
+    .getByLabel(
+      "I reviewed the person boundaries, values and duplicate decisions.",
+    )
+    .check();
+  await popup
+    .getByRole("button", { name: "Confirm import", exact: true })
+    .click();
+  await expect(popup.locator("#status")).toContainText("Import complete");
+}
+async function select(name) {
+  await popup
+    .getByRole("button", { name: "Fill form", exact: true })
+    .first()
+    .click();
+  await popup.locator("#search").fill(name);
+  await popup.locator(".person").filter({ hasText: name }).first().click();
+}
+async function seed() {
+  await upload("people.csv", csv);
+  await confirmImport();
+}
 
-test('reads the portal attachment without a popup import, then fills and preserves existing answers', async () => {
-  await portalUpload({ name: 'resume.txt', mimeType: 'text/plain', buffer: Buffer.from('Akshat Sharma\nakshat@example.com\n9876543210\nCountry: India') });
-  expect(await job.locator('#attachment').evaluate(el => el.files.length)).toBe(1);
-  await expect(job.locator('#firstName')).toHaveValue('Akshat');
-  await expect(popup.locator('#profile-firstName')).toHaveValue('Akshat');
-  await expect(popup.locator('#profile-email')).toHaveValue('akshat@example.com');
-  await popup.locator('#profileForm button').click();
-  await expect(popup.locator('#status')).toContainText('Profile saved');
-  await popup.locator('#applyTab').click();
-  await job.bringToFront();
-  await popup.evaluate(() => document.querySelector('#scanPage').click());
-  await expect(popup.locator('#scanSummary')).toContainText('9 fields found');
-  await expect(popup.locator('#missingFields')).toContainText('Expected salary');
-  await expect(popup.locator('#missingFields')).toContainText('authorized to work');
-  await expect(job.locator('#firstName')).toHaveValue('Akshat');
-  await expect(job.locator('#phone')).toHaveValue('9876543210');
-  const salary = popup.locator('#missingFields .missing-row').filter({ hasText: 'Expected salary' });
-  await salary.locator('textarea').fill('1200000');
-  const authorization = popup.locator('#missingFields .missing-row').filter({ hasText: 'authorized to work' });
-  await authorization.locator('select').selectOption('Yes');
-  await popup.evaluate(() => document.querySelector('#fillPage').click());
-  await expect(popup.locator('#status')).toContainText('Filled 2 fields');
-  await expect(job.locator('#firstName')).toHaveValue('Akshat');
-  await expect(job.locator('#lastName')).toHaveValue('Sharma');
-  await expect(job.locator('#email')).toHaveValue('existing@example.com');
-  await expect(job.locator('#phone')).toHaveValue('9876543210');
-  await expect(job.locator('#country')).toHaveValue('IN');
-  await expect(job.locator('#salary')).toHaveValue('1200000');
-  await expect(job.locator('#authorized')).toHaveValue('Yes');
-  await expect(job.locator('#consent')).not.toBeChecked();
+test("imports multiple people, requires selection, fills only one person, confirms learning and supports undo", async () => {
+  await seed();
+  await select("Rahul Sharma");
+  await popup.getByRole("button", { name: "Scan form", exact: true }).click();
+  await expect(popup.locator("#status")).toContainText("Detected");
+  await popup
+    .getByRole("button", { name: "Fill form", exact: true })
+    .last()
+    .click();
+  await expect(job.locator("#name")).toHaveValue("Rahul Sharma");
+  await expect(job.locator("#phone")).toHaveValue("9876543210");
+  await expect(job.locator("#country")).toHaveValue("IN");
+  await expect(job.locator("[name=contact][value=phone]")).toBeChecked();
+  await expect(job.locator("#address")).toHaveValue("");
+  await expect(job.locator("#dob")).toHaveValue("");
+  await expect(job.locator("#bank")).toHaveValue("");
+  await expect(job.locator("#consent")).not.toBeChecked();
   expect(await job.evaluate(() => window.submitted)).toBe(false);
-  expect(await job.evaluate(() => window.events)).toEqual(['input']);
-  expect(await popup.evaluate(async () => Object.keys(await chrome.storage.local.get(null)))).toEqual(['profile', 'savedAnswers']);
-  const remembered = await popup.evaluate(async () => (await chrome.storage.local.get('savedAnswers')).savedAnswers);
-  expect(Object.values(remembered).map(entry => entry.answer)).toEqual(['1200000', 'Yes']);
+  await popup.getByLabel("Answer Home Address").fill("12 Lake Road");
+  await popup
+    .getByRole("button", { name: "Fill form", exact: true })
+    .last()
+    .click();
+  await expect(job.locator("#address")).toHaveValue("12 Lake Road");
+  let data = await popup.evaluate(
+    async () =>
+      (await chrome.runtime.sendMessage({ type: "DB_SEARCH", query: "Rahul" }))
+        .result.items[0],
+  );
+  expect(data.fields.address).toBeUndefined();
+  await popup
+    .getByRole("button", { name: "Confirm save to selected profile" })
+    .click();
+  await expect(popup.locator("#status")).toContainText("saved to Rahul");
+  data = await popup.evaluate(
+    async () =>
+      (await chrome.runtime.sendMessage({ type: "DB_SEARCH", query: "Priya" }))
+        .result.items[0],
+  );
+  expect(data.fields.address).toBeUndefined();
+  await select("Priya Sharma");
+  await popup.getByRole("button", { name: "Scan form", exact: true }).click();
+  await popup
+    .getByRole("button", { name: "Fill form", exact: true })
+    .last()
+    .click();
+  await expect(popup.locator("#status")).toContainText("Undo the previous");
+  await popup.getByRole("button", { name: "Undo autofill" }).click();
+  await popup.getByRole("button", { name: "Scan form", exact: true }).click();
+  await popup
+    .getByRole("button", { name: "Fill form", exact: true })
+    .last()
+    .click();
+  await expect(job.locator("#name")).toHaveValue("Priya Sharma");
+  await expect(job.locator("#email")).toHaveValue("priya@example.com");
+  await job.locator("#phone").fill("9999999999");
+  await popup.getByRole("button", { name: "Undo autofill" }).click();
+  await expect(job.locator("#phone")).toHaveValue("9999999999");
+  await expect(job.locator("#name")).toHaveValue("");
+});
+test("finds duplicates, resolves conflicts explicitly, and prevents repeated document writes", async () => {
+  await seed();
+  await upload(
+    "updates.csv",
+    "Name,Email,Phone,Address\nRahul Sharma,rahul@example.com,1111111111,Updated Road\nNew Person,new@example.com,9222222222,New Road",
+  );
+  await expect(
+    popup.getByRole("button", { name: "Confirm import", exact: true }),
+  ).toBeDisabled();
+  await expect(popup.getByText("Potential match: Rahul Sharma")).toBeVisible();
+  await popup
+    .getByRole("button", { name: "Review update to this profile" })
+    .click();
+  await popup.getByLabel("Resolve phone").selectOption("keep");
+  await confirmImport();
+  const p = await popup.evaluate(
+    async () =>
+      (
+        await chrome.runtime.sendMessage({
+          type: "DB_SEARCH",
+          query: "rahul@example.com",
+        })
+      ).result.items[0],
+  );
+  expect(p.fields.phone).toBe("9876543210");
+  expect(p.fields.address).toBe("Updated Road");
+  expect(
+    await popup.evaluate(
+      async () =>
+        (await chrome.runtime.sendMessage({ type: "DB_STATS" })).result.total,
+    ),
+  ).toBe(3);
+  await upload(
+    "updates.csv",
+    "Name,Email,Phone,Address\nRahul Sharma,rahul@example.com,1111111111,Updated Road\nNew Person,new@example.com,9222222222,New Road",
+  );
+  await popup.getByLabel("Record decision").selectOption("skip");
+  await popup.getByRole("button", { name: "Next record" }).click();
+  await popup.getByLabel("Record decision").selectOption("skip");
+  await popup
+    .getByLabel(
+      "I reviewed the person boundaries, values and duplicate decisions.",
+    )
+    .check();
+  await popup
+    .getByRole("button", { name: "Confirm import", exact: true })
+    .click();
+  await expect(popup.locator("#status")).toContainText("already imported");
+});
+test("reads a real multi-person PDF, a DOCX, and an Excel spreadsheet locally", async () => {
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const page = pdf.addPage();
+  [
+    "Name: Alex Carter",
+    "Email: alex@example.com",
+    "Phone: 9876543210",
+    "Name: Morgan Lee",
+    "Email: morgan@example.com",
+    "Phone: 9123456789",
+  ].forEach((line, i) =>
+    page.drawText(line, { x: 40, y: 740 - i * 24, size: 12, font }),
+  );
+  await upload("two-people.pdf", await pdf.save());
+  await expect(popup.getByText(/Record 1 of 2/)).toBeVisible();
+  await confirmImport();
+  expect(
+    await popup.evaluate(
+      async () =>
+        (await chrome.runtime.sendMessage({ type: "DB_STATS" })).result.total,
+    ),
+  ).toBe(2);
+  await upload("resume.docx", await readFile("tests/fixtures/resume.docx"));
+  await popup.getByLabel("Record decision").selectOption("create");
+  await confirmImport();
+  const book = new ExcelJS.Workbook();
+  const sheet = book.addWorksheet("People");
+  sheet.addRow(["Name", "Email", "Phone"]);
+  sheet.addRow(["Excel Person", "excel@example.com", "9000000000"]);
+  await upload("people.xlsx", await book.xlsx.writeBuffer());
+  await confirmImport();
+  expect(
+    await popup.evaluate(
+      async () =>
+        (
+          await chrome.runtime.sendMessage({
+            type: "DB_SEARCH",
+            query: "excel@example.com",
+          })
+        ).result.items.length,
+    ),
+  ).toBe(1);
+});
+test("preserves existing values, learns trusted page edits only after confirmation, and survives database reopening", async () => {
+  await seed();
+  await job.locator("#email").fill("existing@example.com");
+  await select("Rahul Sharma");
+  await popup.getByRole("button", { name: "Scan form", exact: true }).click();
+  await popup
+    .getByRole("button", { name: "Fill form", exact: true })
+    .last()
+    .click();
+  await expect(job.locator("#email")).toHaveValue("existing@example.com");
+  await job.locator("#address").fill("Manual Home");
+  await job.locator("#email").click();
+  await popup
+    .getByRole("button", { name: "Review answers entered on page" })
+    .click();
+  expect(
+    await popup.evaluate(
+      async () =>
+        (
+          await chrome.runtime.sendMessage({
+            type: "DB_SEARCH",
+            query: "Rahul",
+          })
+        ).result.items[0].fields.address,
+    ),
+  ).toBeUndefined();
+  await popup
+    .getByRole("button", { name: "Confirm save to selected profile" })
+    .click();
+  await expect(popup.locator("#status")).toContainText("saved to Rahul");
+  await background.reload();
+  await popup.reload();
+  await select("Rahul Sharma");
+  await job.goto(`${url}/fixture`);
+  await popup.getByRole("button", { name: "Scan form", exact: true }).click();
+  await popup
+    .getByRole("button", { name: "Fill form", exact: true })
+    .last()
+    .click();
+  await expect(job.locator("#address")).toHaveValue("Manual Home");
+});
+test("manages profiles, imports JSON exports, and protects database from content-script requests", async () => {
+  await seed();
+  await popup.getByRole("button", { name: "Settings", exact: true }).click();
+  await popup.getByRole("button", { name: "Export JSON", exact: true }).click();
+  const downloaded = popup.waitForEvent("download");
+  await popup
+    .getByRole("button", { name: "Confirm export", exact: true })
+    .click();
+  const download = await downloaded;
+  expect(download.suggestedFilename()).toBe("personal-assist-profiles.json");
+  expect(
+    JSON.parse(await readFile(await download.path(), "utf8")).profiles,
+  ).toHaveLength(2);
+
+  const exported = await popup.evaluate(
+    async () =>
+      (await chrome.runtime.sendMessage({ type: "DB_EXPORT" })).result,
+  );
+  expect(exported.profiles.length).toBe(2);
+  await job.addScriptTag({ path: resolve("dist/content.js") });
+  expect(
+    await job.evaluate(() => chrome.runtime.sendMessage({ type: "DB_EXPORT" })),
+  ).toBeUndefined();
+  await popup.getByRole("button", { name: "People", exact: true }).click();
+  await popup.locator(".person").filter({ hasText: "Rahul Sharma" }).click();
+  await popup
+    .getByRole("button", { name: "Edit profile", exact: true })
+    .click();
+  await popup.getByLabel("Full name", { exact: true }).fill("Rahul Updated");
+  await popup.getByLabel("Resolve fullName").selectOption("replace");
+  await popup
+    .getByRole("button", { name: "Save profile", exact: true })
+    .click();
+  await expect(popup.locator("#status")).toContainText("Profile saved");
+  await popup
+    .getByRole("button", { name: "Delete profile", exact: true })
+    .click();
+  await popup
+    .getByRole("button", { name: "Confirm delete", exact: true })
+    .click();
+  await expect(popup.locator("#status")).toContainText("completed");
+  expect(
+    await popup.evaluate(
+      async () =>
+        (await chrome.runtime.sendMessage({ type: "DB_STATS" })).result.total,
+    ),
+  ).toBe(1);
+  await popup.evaluate(() => chrome.runtime.sendMessage({ type: "DB_CLEAR" }));
+  await upload("backup.json", JSON.stringify(exported));
+  await confirmImport();
+  expect(
+    await popup.evaluate(
+      async () =>
+        (await chrome.runtime.sendMessage({ type: "DB_STATS" })).result.total,
+    ),
+  ).toBe(2);
+});
+test("handles unreadable files, changed forms and permission errors without disclosing data", async () => {
+  await popup.getByRole("button", { name: "Import", exact: true }).click();
+  await popup.getByLabel("Upload document").setInputFiles({
+    name: "blank.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from(""),
+  });
+  await expect(popup.locator("#status")).toContainText("No readable text");
+  await seed();
+  await select("Rahul Sharma");
+  await popup.getByRole("button", { name: "Scan form", exact: true }).click();
+  await job.evaluate(
+    () =>
+      (document.querySelector("#name").closest("label").firstChild.textContent =
+        "Bank account number"),
+  );
+  await popup
+    .getByRole("button", { name: "Fill form", exact: true })
+    .last()
+    .click();
+  await expect(job.locator("#name")).toHaveValue("");
+  await popup.evaluate(() => {
+    chrome.scripting.executeScript = async () => {
+      throw new Error("Website access denied");
+    };
+  });
+  await popup.getByRole("button", { name: "Scan form", exact: true }).click();
+  await expect(popup.locator("#status")).toContainText("access denied");
+  expect(await job.evaluate(() => window.submitted)).toBe(false);
 });
 
-test('suggests remembered answers after reopening, requires review, and supports opting out', async () => {
-  await job.reload();
-  await popup.reload();
-  await popup.locator('#applyTab').click();
-  await popup.evaluate(() => document.querySelector('#scanPage').click());
-  const salary = popup.locator('#missingFields .missing-row').filter({ hasText: 'Expected salary' });
-  const authorization = popup.locator('#missingFields .missing-row').filter({ hasText: 'authorized to work' });
-  await expect(salary.locator('textarea')).toHaveValue('1200000');
-  await expect(authorization.locator('select')).toHaveValue('Yes');
-  await expect(salary).toContainText('Saved answer — review');
-  await expect(job.locator('#salary')).toHaveValue('');
-  await popup.locator('#rememberAnswers').uncheck();
-  await salary.locator('textarea').fill('1250000');
-  await popup.evaluate(() => document.querySelector('#fillPage').click());
-  await expect(job.locator('#salary')).toHaveValue('1250000');
-  const remembered = await popup.evaluate(async () => (await chrome.storage.local.get('savedAnswers')).savedAnswers);
-  expect(Object.values(remembered).find(entry => entry.label === 'Expected salary').answer).toBe('1200000');
+test("paginates large imports and searches by partial normalized phone and company", async () => {
+  const records = [
+    "Name,Email,Phone,Company",
+    ...Array.from(
+      { length: 500 },
+      (_, i) =>
+        `Person ${i},p${i}@example.com,98${String(i).padStart(8, "0")},${i === 42 ? "Target Company" : "Company " + i}`,
+    ),
+  ].join("\n");
+  await upload("500-people.csv", records);
+  await confirmImport();
+  await popup
+    .getByRole("button", { name: "Fill form", exact: true })
+    .first()
+    .click();
+  await expect(popup.locator(".person")).toHaveCount(20);
+  await popup.locator("#search").fill("00042");
+  await expect(popup.locator(".person")).toHaveCount(11);
+  await expect(popup.getByText("Person 42", { exact: true })).toBeVisible();
+  await popup.locator("#search").fill("98 0000 0042");
+  await expect(popup.locator(".person")).toHaveCount(1);
+  await popup.locator("#search").fill("TARGET company");
+  await expect(popup.locator(".person")).toHaveCount(1);
+  await popup.getByRole("button", { name: "Clear search" }).click();
+  await expect(popup.locator(".person")).toHaveCount(20);
+  await popup.getByRole("button", { name: "Next", exact: true }).click();
+  await expect(popup.locator(".inline")).toContainText(["21–40 of 500"]);
 });
 
-test('saves manually entered portal details without learning existing or autofilled values', async () => {
-  await job.reload();
-  await popup.reload();
-  await popup.locator('#applyTab').click();
-  await popup.evaluate(() => document.querySelector('#scanPage').click());
-  await expect(job.locator('#firstName')).toHaveValue('Akshat');
-  await job.locator('#salary').fill('1350000');
-  await job.locator('#email').fill('updated@example.com');
-  await job.locator('#consent').check();
-  await popup.evaluate(() => document.querySelector('#savePageAnswers').click());
-  await expect(popup.locator('#status')).toContainText('Saved 2 manually entered answers');
-  await popup.reload();
-  await expect(popup.locator('#profile-email')).toHaveValue('updated@example.com');
-  await expect(popup.locator('#savedAnswersList')).toContainText('Expected salary');
-  const remembered = await popup.evaluate(async () => (await chrome.storage.local.get('savedAnswers')).savedAnswers);
-  expect(Object.values(remembered).find(entry => entry.label === 'Expected salary').answer).toBe('1350000');
-  expect(Object.values(remembered).some(entry => /agree|consent|email|first name/i.test(entry.label))).toBe(false);
-  expect(Object.values(remembered)).toHaveLength(2);
-});
-
-test('edits and forgets remembered answers without removing the resume profile', async () => {
-  await popup.reload();
-  const salary = popup.locator('#savedAnswersList .missing-row').filter({ hasText: 'Expected salary' });
-  await salary.locator('textarea').fill('1400000');
-  await popup.locator('#saveRemembered').click();
-  await expect(popup.locator('#status')).toContainText('Remembered answers updated');
-  const authorization = popup.locator('#savedAnswersList .missing-row').filter({ hasText: 'authorized to work' });
-  await authorization.getByRole('button', { name: 'Forget this answer' }).click();
-  await expect(popup.locator('#status')).toContainText('Saved answer removed');
-  await expect(popup.locator('#profile-firstName')).toHaveValue('Akshat');
-  await popup.reload();
-  await expect(popup.locator('#savedAnswersList textarea')).toHaveValue('1400000');
-  expect(await popup.evaluate(async () => Object.values((await chrome.storage.local.get('savedAnswers')).savedAnswers))).toHaveLength(1);
-});
-
-test('retains saved profile across reopening and deletes it on request', async () => {
-  await popup.reload();
-  await expect(popup.locator('#profile-firstName')).toHaveValue('Akshat');
-  await expect(popup.locator('#savedAnswersList')).toContainText('Expected salary');
-  popup.once('dialog', dialog => dialog.accept());
-  await popup.locator('#deleteData').click();
-  await expect(popup.locator('#profile-firstName')).toHaveValue('');
-  expect(await popup.evaluate(async () => await chrome.storage.local.get('profile'))).toEqual({});
-  expect(await popup.evaluate(async () => await chrome.storage.local.get('savedAnswers'))).toEqual({});
-});
-
-test('makes the portal-upload draft available and skips fields changed since scanning', async () => {
-  await job.reload();
-  await popup.reload();
-  await portalUpload({ name: 'resume.txt', mimeType: 'text/plain', buffer: Buffer.from('Akshat Sharma\nakshat@example.com\n9876543210') });
-  await expect(popup.locator('#profile-firstName')).toHaveValue('Akshat');
-  await popup.locator('#applyTab').click();
-  await popup.evaluate(() => document.querySelector('#scanPage').click());
-  await expect(popup.locator('#scanSummary')).toBeVisible();
-  await popup.locator('#profileTab').click();
-  await popup.locator('#profileForm button').click();
-  await popup.locator('#applyTab').click();
-  await popup.evaluate(() => document.querySelector('#scanPage').click());
-  await expect(popup.locator('#scanSummary')).toBeVisible();
+test("re-scans dynamic steps and rejects invalid learned values", async () => {
+  await seed();
+  await select("Rahul Sharma");
+  await popup.getByRole("button", { name: "Scan form", exact: true }).click();
+  await popup.getByLabel("Answer Home Address").fill("First step address");
+  await popup
+    .getByRole("button", { name: "Fill form", exact: true })
+    .last()
+    .click();
+  await popup.getByRole("button", { name: "Use once / discard" }).click();
   await job.evaluate(() => {
-    const input = document.querySelector('#firstName');
-    input.parentElement.firstChild.textContent = 'Expected salary';
-    input.value = '';
-    document.querySelector('#phone').value = '9999999999';
+    document.querySelector("form").innerHTML =
+      '<label>City<input id="city" required></label><label>Email Address<input id="secondEmail" type="email" required></label><button>Submit</button>';
   });
-  await popup.evaluate(() => document.querySelector('#fillPage').click());
-  await expect(popup.locator('#status')).toContainText('Filled 0 fields');
-  await expect(job.locator('#firstName')).toHaveValue('');
-  await expect(job.locator('#phone')).toHaveValue('9999999999');
-  popup.once('dialog', dialog => dialog.accept());
-  await popup.locator('#profileTab').click();
-  await popup.locator('#deleteData').click();
+  await popup.getByRole("button", { name: "Scan form", exact: true }).click();
+  await popup.getByLabel("Answer City").fill("Pune");
+  await popup
+    .getByRole("button", { name: "Fill form", exact: true })
+    .last()
+    .click();
+  await expect(job.locator("#city")).toHaveValue("Pune");
+  await popup.getByRole("button", { name: "Use once / discard" }).click();
+  await job.locator("#secondEmail").fill("invalid");
+  await job.locator("#city").click();
+  await popup
+    .getByRole("button", { name: "Review answers entered on page" })
+    .click();
+  await expect(popup.locator("#status")).toContainText("No valid manual edits");
 });
 
-test('reads text-based PDF and DOCX with the extension CSP and local worker', async () => {
-  for (const name of ['resume.pdf', 'resume.docx']) {
-    await job.reload(); await popup.reload();
-    await portalUpload(resolve('tests/fixtures', name));
-    await expect(popup.locator('#profile-email')).toHaveValue('akshat@example.com');
-    popup.once('dialog', dialog => dialog.accept());
-    await popup.locator('#deleteData').click();
-    await expect(popup.locator('#profile-email')).toHaveValue('');
-  }
+test("keeps on-device AI opt-in and degrades gracefully when the browser API is absent", async () => {
+  await popup.evaluate(() =>
+    Object.defineProperty(globalThis, "LanguageModel", {
+      value: undefined,
+      writable: true,
+      configurable: true,
+    }),
+  );
+  await popup.getByRole("button", { name: "Settings", exact: true }).click();
+  await popup
+    .getByRole("button", { name: "Prepare / enable on-device AI" })
+    .click();
+  await expect(popup.locator("#status")).toContainText("does not expose");
+  // Provider contract, not model accuracy: a source-supported record still needs review.
+  await popup.evaluate(() => {
+    globalThis.LanguageModel = {
+      create: async () => ({
+        prompt: async () =>
+          JSON.stringify({
+            records: [
+              {
+                fields: {
+                  fullName: { value: "AI Person", quote: "Name: AI Person" },
+                  email: {
+                    value: "ai@example.com",
+                    quote: "Email: ai@example.com",
+                  },
+                },
+              },
+            ],
+          }),
+        destroy: () => {},
+      }),
+    };
+  });
+  await popup
+    .getByRole("button", { name: "Prepare / enable on-device AI" })
+    .click();
+  await expect(popup.locator("#status")).toContainText("On-device AI enabled");
+  await upload("ai-document.txt", "Name: AI Person\nEmail: ai@example.com");
+  await expect(popup.getByLabel("Record decision")).toHaveValue("");
+  await expect(
+    popup.getByRole("button", { name: "Confirm import", exact: true }),
+  ).toBeDisabled();
+  await popup.getByLabel("Record decision").selectOption("create");
+  await confirmImport();
 });
 
-test('autofills first, pauses for required details, then automatically attempts submission exactly once', async () => {
-  await job.reload();
+test("migrates a legacy profile once without silently re-enabling old automatic behavior", async () => {
+  await popup.evaluate(() => chrome.runtime.sendMessage({ type: "DB_CLEAR" }));
+  // Clear the version marker to emulate a first upgrade from the previous release.
+  await background.evaluate(
+    () =>
+      new Promise((resolve, reject) => {
+        const request = indexedDB.open("personal-assist-v2");
+        request.onsuccess = () => {
+          const db = request.result;
+          const tx = db.transaction("settings", "readwrite");
+          tx.objectStore("settings").delete("legacyMigration");
+          tx.oncomplete = () => {
+            db.close();
+            resolve();
+          };
+          tx.onerror = () => reject(tx.error);
+        };
+      }),
+  );
+  await popup.evaluate(() =>
+    chrome.storage.local.set({
+      profile: {
+        firstName: "Legacy",
+        lastName: "Person",
+        email: "legacy@example.com",
+      },
+      savedAnswers: {
+        old: {
+          label: "Expected salary",
+          answer: "50000",
+          origin: "https://example.com",
+        },
+      },
+    }),
+  );
+  await background.reload();
   await popup.reload();
-  await job.evaluate(() => {
-    document.querySelector('#secret').remove();
-    for (const id of ['firstName', 'lastName', 'email', 'phone', 'country', 'salary', 'authorized', 'attachment', 'consent']) document.getElementById(id).required = true;
-    window.submissions = 0;
-    document.querySelector('form').addEventListener('submit', () => window.submissions++);
-  });
-  for (const [key, value] of [['firstName', 'Akshat'], ['lastName', 'Sharma'], ['phone', '9876543210'], ['country', 'India']]) await popup.locator(`#profile-${key}`).fill(value);
-  await popup.locator('#profileForm button').click();
-  await popup.locator('#applyTab').click();
-  await popup.locator('#autoSubmit').check();
-  await popup.evaluate(() => document.querySelector('#scanPage').click());
-  await expect(popup.locator('#status')).toContainText('Automatic submission is active');
-  await expect(job.locator('#firstName')).toHaveValue('Akshat');
-  await job.waitForTimeout(1000);
-  expect(await job.evaluate(() => window.submitted)).toBe(false);
-  await job.locator('#salary').fill('1200000');
-  await job.locator('#authorized').selectOption('Yes');
-  await job.locator('#consent').check();
-  await job.waitForTimeout(500);
-  expect(await job.evaluate(() => window.submitted)).toBe(false);
-  await job.locator('#attachment').setInputFiles(resolve('tests/fixtures/resume.pdf'));
-  await expect(job.locator('#resume-assist-upload')).toHaveAttribute('data-state', 'complete');
-  await popup.evaluate(() => document.querySelector('#scanPage').click());
-  await expect.poll(() => job.evaluate(() => window.submissions)).toBe(1);
-  await job.waitForTimeout(1200);
-  expect(await job.evaluate(() => window.submissions)).toBe(1);
-  await expect(job.locator('#resume-assist-progress')).toBeVisible();
-});
-
-test('cancels automatic submission during the countdown', async () => {
-  await job.reload();
+  await expect(popup.locator(".person")).toContainText(["Legacy Person"]);
+  await expect(job.locator("#email")).toHaveValue("");
+  await background.reload();
   await popup.reload();
-  await job.evaluate(() => document.querySelector('#secret').remove());
-  await popup.locator('#applyTab').click();
-  await popup.locator('#autoSubmit').check();
-  await popup.locator('#allowOptionalBlanks').check();
-  await popup.evaluate(() => document.querySelector('#scanPage').click());
-  await expect(popup.locator('#status')).toContainText('Automatic submission is active');
-  await job.locator('#salary').fill('1200000');
-  await job.waitForTimeout(700);
-  await popup.evaluate(() => document.querySelector('#cancelSubmission').click());
-  await expect(popup.locator('#status')).toContainText('cancelled');
-  await job.waitForTimeout(3500);
-  expect(await job.evaluate(() => window.submitted)).toBe(false);
+  await expect(popup.locator(".person")).toHaveCount(1);
+  const exported = await popup.evaluate(
+    async () =>
+      (await chrome.runtime.sendMessage({ type: "DB_EXPORT" })).result,
+  );
+  expect(exported.legacyAnswers.old.answer).toBe("50000");
+  expect(exported.profiles[0].status).toBe("review");
 });
 
-test('does not read new uploads after the portal is disabled', async () => {
-  test.skip(useExtension, 'The real-extension fixture declares required host access; permission revocation is tested with the Chrome API adapter.');
-  await job.reload(); await popup.reload();
-  await popup.locator('#enablePortal').click();
-  await expect(popup.locator('#status')).toContainText('Enabled on this portal');
-  await popup.locator('#disablePortal').click();
-  await expect(popup.locator('#status')).toContainText('Disabled on this portal');
-  await popup.evaluate(() => chrome.storage.session.clear());
-  await job.locator('#attachment').setInputFiles(resolve('tests/fixtures/resume.pdf'));
-  await job.waitForTimeout(500);
-  await expect(job.locator('#firstName')).toHaveValue('');
-  await expect(job.locator('#resume-assist-upload')).toHaveCount(0);
-  expect(await popup.evaluate(() => chrome.storage.session.get(null))).toEqual({});
+test("captures current workspace assets from real imported sample state", async () => {
+  await popup.setViewportSize({ width: 1280, height: 800 });
+  await seed();
+  await select("Rahul Sharma");
+  await popup.getByRole("button", { name: "People", exact: true }).click();
+  await popup.screenshot({ path: "docs/store-assets/profile.png" });
+  await popup
+    .getByRole("button", { name: "Fill form", exact: true })
+    .first()
+    .click();
+  await popup.getByRole("button", { name: "Scan form", exact: true }).click();
+  await popup.screenshot({ path: "docs/store-assets/missing-answers.png" });
 });
 
-test('ignores cover-letter attachments and reports unreadable resumes without filling', async () => {
-  await job.reload(); await popup.reload();
-  await popup.locator('#enablePortal').click();
-  await expect(popup.locator('#status')).toContainText('Enabled on this portal');
-  await job.evaluate(() => {
-    const label = document.createElement('label'); label.textContent = 'Cover letter';
-    const input = document.createElement('input'); input.type = 'file'; input.id = 'cover';
-    label.append(input); document.querySelector('form').append(label);
-  });
-  await job.locator('#cover').setInputFiles(resolve('tests/fixtures/resume.pdf'));
-  await job.waitForTimeout(500);
-  await expect(job.locator('#resume-assist-upload')).toHaveCount(0);
-  const blank = join(temporary, 'blank-resume.txt'); await writeFile(blank, '');
-  await job.locator('#attachment').setInputFiles(blank);
-  await expect(job.locator('#resume-assist-upload')).toHaveAttribute('data-state', 'error');
-  await expect(job.locator('#firstName')).toHaveValue('');
-  expect(await popup.evaluate(() => chrome.storage.session.get(null))).toEqual({});
-});
-
-test('an older upload cannot replace a newer resume draft', async () => {
-  test.skip(useExtension, 'This transport-level test uses the Chrome API adapter; page scripts cannot call extension runtime APIs in real Chrome.');
-  const result = await job.evaluate(async () => {
-    const message = { type: 'PORTAL_RESUME_UPLOADED', url: location.href, name: 'resume.txt', uploader: 'ordering-test' };
-    const newer = await chrome.runtime.sendMessage({ ...message, sequence: 20, data: btoa('Newer Candidate\nnewer@example.com') });
-    const older = await chrome.runtime.sendMessage({ ...message, sequence: 19, data: btoa('Older Candidate\nolder@example.com') });
-    return { newer, older };
-  });
-  expect(result.newer.profile.firstName).toBe('Newer');
-  expect(result.older.error).toContain('newer resume');
-  const drafts = await popup.evaluate(() => chrome.storage.session.get(null));
-  expect(Object.values(drafts)[0].profile.email).toBe('newer@example.com');
-});
-
-test('reuses saved contacts on application open and remembers trusted valid manual edits', async () => {
-  await popup.evaluate(() => chrome.storage.local.set({ profile: { firstName: 'Saved', email: 'saved@example.com', address: '12 Lake Road' }, rememberAnswers: true }));
-  await job.reload();
-  await job.evaluate(() => {
-    document.querySelector('#secret').remove();
-    const label = document.createElement('label'); label.textContent = 'Home address';
-    const input = document.createElement('input'); input.id = 'address'; label.append(input); document.querySelector('form').append(label);
-  });
-  await popup.locator('#enablePortal').click();
-  await expect(job.locator('#firstName')).toHaveValue('Saved');
-  await expect(job.locator('#address')).toHaveValue('12 Lake Road');
-  await expect(job.locator('#email')).toHaveValue('existing@example.com');
-  await job.locator('#phone').fill('9876543210'); await job.locator('#salary').click();
-  await expect.poll(() => popup.evaluate(async () => (await chrome.storage.local.get('profile')).profile.phone)).toBe('9876543210');
-  await job.locator('#email').fill('invalid'); await job.locator('#salary').click();
-  expect(await popup.evaluate(async () => (await chrome.storage.local.get('profile')).profile.email)).toBe('saved@example.com');
-  await job.locator('#email').fill('manual@example.com'); await job.locator('#salary').click();
-  await expect.poll(() => popup.evaluate(async () => (await chrome.storage.local.get('profile')).profile.email)).toBe('manual@example.com');
-  await popup.evaluate(() => chrome.storage.local.set({ rememberAnswers: false }));
-  await job.locator('#phone').fill('1111111111'); await job.locator('#salary').click();
-  expect(await popup.evaluate(async () => (await chrome.storage.local.get('profile')).profile.phone)).toBe('9876543210');
-  await job.reload(); await job.evaluate(() => document.querySelector('#secret').remove());
-  await popup.locator('#enablePortal').click();
-  await expect(job.locator('#phone')).toHaveValue('9876543210');
-  expect(await job.evaluate(() => window.submitted)).toBe(false);
+test("retains IndexedDB profiles across a full Chromium shutdown and restart", async () => {
+  await seed();
+  const before = await popup.evaluate(
+    async () =>
+      (await chrome.runtime.sendMessage({ type: "DB_SEARCH", query: "Rahul" }))
+        .result.items[0],
+  );
+  await context.close();
+  await setupContext();
+  await select("Rahul Sharma");
+  const after = await popup.evaluate(
+    async () =>
+      (await chrome.runtime.sendMessage({ type: "DB_SEARCH", query: "Rahul" }))
+        .result.items[0],
+  );
+  expect(after.id).toBe(before.id);
+  expect(after.fields.email).toBe("rahul@example.com");
+  await expect(job.locator("#name")).toHaveValue("");
+  await popup.getByRole("button", { name: "Scan form", exact: true }).click();
+  await popup
+    .getByRole("button", { name: "Fill form", exact: true })
+    .last()
+    .click();
+  await expect(job.locator("#phone")).toHaveValue("9876543210");
 });

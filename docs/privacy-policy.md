@@ -1,31 +1,19 @@
-# Resume Assist privacy policy
+# Personal Assist privacy policy
 
-Resume Assist reads the resume you attach on an enabled job portal and helps fill its application form using detected details and answers you provide.
+This is a policy draft for the project publisher. Add a publisher contact and effective date before hosting it for a store listing.
 
-## Information processed
+Personal Assist stores information about people whom you explicitly import or enter. Each profile is separate and identified by a unique ID. Data can include names, contact and address information, professional fields, optional dates/gender and reviewed custom information, along with source references and update timestamps.
 
-After you enable a portal and grant access to that hostname, the extension detects your native resume/CV file selection and reads PDF, DOCX and TXT files locally. No separate upload to Resume Assist is needed. It can process contact details, education, skills, employment information and other document text. Raw file bytes pass only between the local content script and hidden extension parser in memory. The original file and extracted full text are not saved. The portal’s original upload proceeds normally and is governed by that portal’s privacy policy.
+All ordinary processing is local. PDF/DOCX/TXT/CSV/XLSX/JSON files are read on your device. Raw documents and complete extracted text are not permanently stored. Import candidates are held temporarily until you confirm. The local IndexedDB database stores reviewed profile fields and document metadata, not document bytes. Data persists across browser restarts but is not browser-synchronized and is not encrypted by the extension. Removing the extension/browser profile can remove stored data.
 
-Detected profile details and the application URL are held temporarily in browser-session extension storage for the tab. This draft is removed when the tab closes, the browser session ends, you save its profile/answers, or you delete your saved data. Matching empty application fields are filled immediately, so review them on the portal. Existing answers are preserved.
+There is no backend, analytics, remote parsing service, remote AI call or automatic cloud synchronization. An optional on-device Chrome model can be prepared only after you click its enable button; Chrome may download a model. Document prompts and model inference stay on device. This feature lasts for the current extension interface session. It is browser/hardware-dependent and can be disabled by choosing standard extraction. Model-inferred identities still require human review. OCR is not bundled; scanned documents need preprocessing into readable text.
 
-The profile you review and save is retained in your browser's local extension storage. It is not synchronized through browser sync, and it is not encrypted by this extension. When Remember answers is enabled, manually supplied answers in the extension are saved for future use. Valid answers entered on a scanned portal page are automatically saved on change/blur when remembering is enabled; you can also explicitly save them. only your edits after scanning are captured, not existing/autofilled values. Basic details update the profile. Other answers are saved with their website and question labels as suggestions for review on future applications. Uncheck Remember answers for one-off answers. Passwords, verification codes, financial/identity numbers, consent controls and file attachments are not remembered. Up to 100 remembered questions are retained.
+Websites do not get database access. After selecting a person and explicitly clicking Fill form, that person's relevant fields are sent to the page content script and matching values are entered in the current website. Filling shares those values with the website, including scripts the website runs. Existing values are preserved. The extension does not submit forms automatically. It does not bypass CAPTCHA, authentication or website restrictions. Payment/banking/password/authentication/national-identity fields and consent choices are excluded; birth date/gender filling requires explicit selection for that fill.
 
-## Information shared
+New manual answers are not saved automatically. You review values and conflicts, then confirm saving them to the selected profile. Duplicate/merge decisions require confirmation; names alone do not establish a shared identity. You can inspect, edit, delete and merge profiles, export a JSON backup, or delete all data in Settings. JSON exports are unencrypted files containing personal information: safeguard them. Deleting local data does not remove submissions or values already shared with websites.
 
-Resume Assist has no developer-operated backend, analytics, or external AI processing service. It does not send resumes or profiles to the extension developer.
+The extension requests activeTab for the website you open it on, scripting for user-initiated scans/fills, and storage for settings/legacy migration. Optional hostname access can be granted/revoked in Settings. Persistent access does not enable automatic profile disclosure. No persistent access to every website is granted by default. Existing injected scripts can remain until the tab is refreshed after permission revocation.
 
-When you ask it to fill a job application, the filled information becomes available to that website. If you enable automatic submission for an application, the extension can click its final Submit button after its completeness checks and cancellable countdown. The receiving website's privacy policy governs its handling of your application. You can attach documents and provide consent directly on that website.
+On upgrading from Resume Assist 1.x, the existing single profile is migrated once to a review-needed local person. Old generic question memories are archived locally and included in full exports, rather than silently mapped to people. Old automatic registrations are removed. Delete all local data also clears this archive and old storage.
 
-## Control and deletion
-
-You can review automatically filled details, edit/save the detected profile, and edit or forget individual remembered answers. Delete my saved data removes the profile, remembered answers and temporary drafts. Disable on this portal revokes its ongoing upload-detection access. Stop/dismiss upload autofill from its page panel and cancel automatic submission separately. Deleting local data does not delete applications or information previously shared with job websites.
-
-## Permissions
-
-The extension uses activeTab for temporary access when opened, scripting to scan/fill pages and register upload detection, storage for saved details and temporary drafts, and offscreen for local document parsing without a visible tab. Optional HTTP/HTTPS permissions allow enabling individual portals. Access is requested for the specific hostname you choose, persists on that host until revoked, and is not granted for every website by default.
-
-## Publisher contact
-
-Before publication, the publisher must add their contact details here and host this policy at a publicly accessible HTTPS address. This document is a publication draft, not a hosted policy.
-
-Enabled portals automatically reuse your saved profile on identifiable job application forms, preserving existing answers. Missing fields remain paused for manual entry. With **Remember answers** enabled (default), valid answers entered on the page are saved when you leave the field. Basic contact and address details update your reusable profile; other answers remain website-specific suggestions for review. Uncheck **Remember answers** to disable saving page edits and popup answers; this preference persists. Automatic reuse excludes account forms containing passwords and requires a recognizable resume upload or application text. Use manual scanning for forms that cannot be identified. Resume-derived details still require reviewing and saving the profile for reuse on future applications.
+Contact: add the publisher's support email/URL before publication.

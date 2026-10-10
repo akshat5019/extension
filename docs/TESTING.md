@@ -1,0 +1,15 @@
+# Manual Chrome checks
+
+Automated tests exercise bundled code with actual Chromium DOM/IndexedDB and adapted extension APIs. Managed cloud Chromium prevents native installation; these checks need your unmanaged browser.
+
+1. Build/load dist, or extract the compiled ZIP and Load unpacked its manifest folder. Inspect the extension Errors page and background service-worker console. Refresh old portal tabs when upgrading.
+2. Import example-people.csv, select each person in turn, and fill a standard registration/application. Verify no existing values are overwritten and no submit is clicked. Undo before switching people.
+3. Upload a text-based multi-person PDF and a DOCX. Verify person boundaries and incomplete-page warnings. Try a scanned PDF and check the no-text error. Import XLSX phones formatted as text.
+4. Import changed/new people, review duplicates/conflicts, choose create/update/skip and confirm. Try the identical file again; verify there are no repeat writes. Try two open workspace windows editing the same profile; the stale revision must be rejected.
+5. Enter missing information, verify it is not stored before confirmation, then save to the correct selected person. Select another person and verify their fields remain unchanged. Keep both conflicting values and verify ambiguous values are withheld from autofill.
+6. Close and restart Chrome, reopen the extension, and search/select the saved people. Confirm IndexedDB persistence and absence of unsolicited automatic filling. Back up before uninstalling or changing extension IDs.
+7. Try native activeTab permission and optional hostname access/revocation. Test restricted Chrome pages, embedded/custom forms, changed labels, invalid inputs, Next/Continue and new tabs. Rescan each step; unsupported controls must remain manual.
+8. Test individual delete, confirmed merge, private JSON export/reimport and Delete all data. If upgrading 1.x, verify one review-needed legacy person and exported legacy answer archive. Confirm registration retirement.
+9. On a Chrome build exposing LanguageModel, explicitly prepare the local model and test ambiguous free-form text. Verify review is mandatory, quoted values match the source, and no personal-data network requests are made. The cloud test only validates the provider contract with a simulated model, not native API/model quality.
+
+Never disable antivirus, managed extension policy or CAPTCHA protections to perform these checks. Live portal compatibility and native browser permissions are separate from the automated fixture results.

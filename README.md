@@ -1,51 +1,95 @@
-# Resume Assist
+# Personal Assist
 
-A Chrome / Edge extension for Naukri, LinkedIn, Indeed, and company career sites. Enable it on a portal once, then attach your resume directly to the application. Resume Assist reads that attachment locally and fills matching empty fields without a separate upload in the extension. Missing answers remain manual, with optional answer memory and automatic submission.
+A runnable Chrome Manifest V3 extension for importing documents into separate local person profiles, searching those profiles, and filling website forms for the person you select. Version 2 replaces Resume Assist's single-profile automatic behavior with **mandatory profile selection, user-triggered filling, and confirmed learning**.
+
+Core features work offline with no account or backend. React + TypeScript provides the popup and full workspace. Dexie/IndexedDB stores profiles and document metadata. Standard local extraction and label mapping work without an AI model. An opt-in Chrome on-device Prompt API provider supports ambiguous free-form documents where the browser exposes it; it is optional, experimental and not a prerequisite.
 
 ## Build and install
 
-For local testing without build tools, [download the ready-to-install extension ZIP](https://github.com/akshat5019/extension/raw/refs/heads/main/downloads/resume-assist.zip), extract it, then choose the extracted folder containing `manifest.json` using **Load unpacked** in `chrome://extensions` with **Developer mode** enabled. This package is for local installation, not a Chrome Web Store listing.
-
-Requires Node.js 22 or newer and Chrome/Edge 120 or newer.
+Requires Node.js 22+ and Chrome/Chromium 120+ for the standard workflow. Optional on-device AI needs a newer compatible Chrome build, supported hardware and availability of its Prompt API/model.
 
 ```sh
 npm ci
+npm run typecheck
 npm run build
 npm test
 npm run test:browser
 ```
 
-Open `chrome://extensions` (or `edge://extensions`), enable **Developer mode**, click **Load unpacked**, and select the generated `dist` folder.
+For local Chrome installation:
 
-1. Open a job application on your portal. Open Resume Assist, click **Enable on this portal**, and grant Chrome's access request for that site's hostname. This persists for later pages on that hostname. Enable separately for another portal or a redirected career-site hostname. **Disable on this portal** revokes it.
-2. Attach your **text-based PDF, DOCX or TXT** resume directly to the portal's resume/CV upload field (up to 10 MB and 50 PDF pages). The original portal upload proceeds normally. Resume Assist reads it locally in a hidden extension document and fills matching empty fields, including fields that appear within 30 seconds on the same form. It preserves existing answers. A status panel shows missing details. No separate extension upload is needed. Image-only scans require manual entry; OCR is not included.
-3. Review the filled details. The extracted profile is a temporary browser-session draft for this tab and URL. Open Resume Assist to edit it and optionally click **Save profile** to retain it. Extraction is conservative: ambiguous details remain blank, and your previously saved profile can supply additional known details. The extension helps the portal's form; it does not change the portal's own resume parser.
-4. Open **Fill application → Start autofill** to show missing questions. Enter answers and click **Fill missing answers & resume**, or complete them directly on the portal. **Remember answers I enter for future applications** is enabled by default; uncheck it for one-off answers. Valid details typed on the portal after scanning are saved automatically when you leave a field if remembering is enabled. **Save answers entered on page** also remains available. Consent choices remain manual. To submit automatically, explicitly check **Submit this application automatically when complete** before starting/resuming autofill. Optional questions also pause submission unless you explicitly choose **Leave unanswered optional fields blank**.
-5. With automatic submission enabled, a status panel stays on the portal even after the popup closes. It waits for complete, valid answers and a unique enabled final Submit button, then shows a **3-second cancellable countdown**. Edits restart the countdown. It clicks Submit at most once; an attempted click is not proof that the portal accepted the application. Check for the portal's confirmation. Cancel from the page panel or the extension popup at any time.
-6. **Use Next / Review yourself and restart autofill on each new step.** The extension never guesses that a Next button is Submit. A URL change, removed form, or 10-minute timeout stops the current automatic-submission session. Selecting a new resume stops any prior submission monitor; approve submission again for the new resume.
+1. Open `chrome://extensions` and enable **Developer mode**.
+2. Click **Load unpacked** and select `dist`, the folder containing `manifest.json`.
+3. Pin Personal Assist from Chrome's Extensions menu.
+4. After updating the files, click the extension's Reload button and refresh your website tabs.
 
-## Coverage and limits
+Alternatively [download the compiled package](https://github.com/akshat5019/extension/raw/refs/heads/main/downloads/resume-assist.zip), extract it, and select the extracted folder containing `manifest.json`. The historical ZIP filename is retained for existing download links. Do not select the ZIP itself or the repository source folder before building. If a download is blocked by your security software, do not disable protection; use the source checkout and normal build workflow or have the detection reviewed.
 
-The extension uses visible labels, ARIA labels, names, and autocomplete attributes, rather than fixed portal selectors. Native text inputs, textareas and single-select dropdowns are supported; React forms receive native input/change events. Existing values are preserved. Salary, notice period, work authorization, sponsorship, demographic information and consent are never inferred from your resume. Questions not found in your saved profile are shown for explicit answers.
+This project has not been published to Chrome Web Store. See [publication instructions](docs/PUBLISH.md).
 
-Direct resume detection supports user-selected files in native file inputs identifiable by a resume/CV label, ARIA label, nearby upload text, field name or filename. Cover letters/certificates are ignored. Custom upload widgets that do not expose a native file selection/change, closed shadow DOM, embedded cross-origin upload frames, and resumes already stored on the portal cannot be read automatically. Reattach the file using a native resume upload or enter your profile manually. Open an embedded application directly where possible. Checkboxes, radio buttons and custom dropdowns remain manual. Passwords are excluded from autofill. Automatic submission stops for detected CAPTCHA, custom/embedded controls, account fields, validation errors, and ambiguous submit buttons.
+## Import and manage people
 
-Detection is general across job platforms; it does not depend on a fixed list of allowed portals. Universal compatibility cannot be guaranteed because portals change their UI, validation and anti-automation requirements. LinkedIn, Naukri, Indeed and career-site field patterns are covered with representative local fixtures, not authenticated live accounts. Multi-step navigation is currently manual.
+Open **Import** in the popup, or **Open workspace** for a full-width extension tab. Choose PDF, DOCX, TXT, CSV, XLSX or a JSON export. The worker separates structured rows and validates values. PDF/DOCX parsing is local; PDF pages are read asynchronously with progress. Import results are staged in memory until confirmation. Closing the interface discards a staged import without partially writing the database.
 
-## Privacy
+CSV/XLSX tables need headings such as `Name`, `Email`, `Phone`, `Address`, `City`, `Company`, `Date of birth`, or `Alternate phone`. Each row is one person. XLSX numeric phone cells must be formatted as text to preserve leading zeroes. Use separate alternate columns for multiple identifiers. Formula cells use their stored text/result; macros and formulas are never executed. JSON exports can be imported through the same reviewed workflow; incoming IDs are not silently reused.
 
-Resume parsing runs locally with bundled PDF.js and Mammoth. No AI service, external API, analytics or remote fonts are used. Raw file bytes are passed only between the page content script and local extension parser in memory; the original file and extracted full text are not stored. Detected profile details plus the application URL are temporarily kept in `chrome.storage.session` for the tab, removed when its tab closes or the browser session ends, and consumed when you save the profile/answers. Your reviewed profile and answers you choose to remember are saved in `chrome.storage.local` (not browser sync). Remembered basic profile details update your profile and can autofill in future. Other answers are scoped to the same website and exact question meaning/options; they appear as suggestions you review before filling, including salary and work authorization. Different wording or websites require a fresh answer. Passwords, verification codes, financial/identity numbers, attachments and consent controls are not remembered. Up to 100 remembered questions are retained; older entries are removed when that limit is reached.
+For multi-person PDF, DOCX or TXT, prefer labelled records:
 
-Edit or forget remembered answers under **Your profile → Remembered application answers**. Use **Delete my saved data** to remove both your profile and remembered answers. Uncheck Remember answers when filling one-off answers. Browser-local storage is not encrypted by this extension. Filling a form shares those filled details with that website.
+```text
+Name: Rahul Sharma
+Email: rahul@example.com
+Phone: 9876543210
+Address: 12 Lake Road
+Name: Priya Sharma
+Email: priya@example.com
+Phone: 9123456789
+Address: 20 Park Street
+```
 
-Permissions: `activeTab` grants temporary access when you open the extension; `scripting` scans/fills and registers upload detection on enabled portals; `storage` holds local saved details and temporary drafts; `offscreen` runs bundled document parsers locally without a visible tab. Optional HTTP/HTTPS host permissions are declared so you can enable any supported portal, but access is requested only for the specific hostname you choose. No persistent website access is granted by default.
+Repeated `Name:` labels, explicit `---` separators and PDF page boundaries separate records. Free-form resumes may contain many names and identifiers; the extension does **not** pool those into one person. Ambiguous identifiers are withheld or flagged. Unlabelled text is reported as incompletely mapped. Every uncertain record needs a decision; edit its fields, add a separate record to split people, or skip it. Compare records with your source document before confirming.
 
-Dependency audit currently reports moderate advisories in Mammoth's CLI dependency chain (`argparse` / `sprintf-js`). The extension imports Mammoth's browser bundle, which does not use that CLI chain. Avoid blindly applying the suggested downgrade to an obsolete Mammoth version.
+Potential matches are identified from names, email and normalized phone numbers. Matching names are **review hints**, never unique IDs. Review matching/conflicting information, choose **Update existing**, **Create separate**, or **Skip**, and resolve conflicts using **Replace**, **Keep both**, or **Leave unchanged**. The final import confirmation commits atomically and reports created, updated, review-needed and skipped counts. Identical file hashes prevent repeated writes; stale profile revisions abort the entire transaction for renewed review.
 
-## Development
+Limits: 25 MB per file, 200 PDF pages, 2 million extracted PDF/DOCX characters, 10,000 records per import, 100 fields per profile, 5,000 characters per field, 20 alternate values per field. Tables report truncation and extra columns. Blank PDF pages, unreadable files, unsupported formats and ambiguous records produce warnings/errors. **OCR is not bundled**: scanned PDFs/images need OCR into text before import. Password-protected, damaged or unusual documents may require conversion. PDF tables with no reliable row boundaries may need CSV export or manual correction.
 
-Source lives in `src/`; `npm run build` generates the complete unpacked extension in `dist/`. Reload the extension and portal page after rebuilding. Unit tests cover parsing, field matching, portal scoping, upload detection and remembered answers. Browser tests exercise actual popup/content/background/parser bundles, the PDF worker and DOM under the extension's CSP with a Chrome API adapter. They verify direct portal uploads, original attachment preservation, missing questions, filling, memory and deletion; they do not verify real Chrome permission prompts or authenticated portal accounts.
+**People** lets you search, select, inspect, create, edit, delete, review duplicates and explicitly merge profiles. Conflicts must be resolved before editing or merging. Source references, creation/update timestamps and revision numbers are available in the profile view. Keeping multiple conflicting values suppresses their automatic use until you choose a single value. Settings offers a confirmed JSON export and confirmed deletion of all local data. Exports contain unencrypted personal information: keep them private.
 
-On Linux browser tests default to `/usr/bin/chromium`; set `CHROMIUM_PATH` to another installed Chromium binary if needed. For an unmanaged browser that allows loading unpacked extensions, `RESUME_TEST_EXTENSION=1 npm run test:browser` runs the same workflow in a real extension context. That mode grants its local fixture host in a temporary test copy because headless Chromium has no clickable toolbar. Permission denial/revocation behavior is tested in adapter mode; a real host-permission override changes that environment. Production permissions remain optional and per-portal. The cloud's managed Chromium blocks installing extensions, so native permission prompts, real offscreen lifecycle and authenticated portal checks must be verified in your own browser.
+## Search and fill forms
 
-Enabled portals automatically reuse your saved profile on identifiable job application forms, preserving existing answers. Missing fields remain paused for manual entry. With **Remember answers** enabled (default), valid answers entered on the page are saved when you leave the field. Basic contact and address details update your reusable profile; other answers remain website-specific suggestions for review. Uncheck **Remember answers** to disable saving page edits and popup answers; this preference persists. Automatic reuse excludes account forms containing passwords and requires a recognizable resume upload or application text. Use manual scanning for forms that cannot be identified. Resume-derived details still require reviewing and saving the profile for reuse on future applications.
+1. Open a normal HTTP/HTTPS website form and click the extension icon.
+2. Search by name, partial phone, email, company or another stored field. Results are case-insensitive, phone searches ignore common separators, and only 20 results are rendered per page.
+3. Select the correct person using the name, phone, email and unique ID shown beside the result.
+4. Click **Scan form**, review supported fields and missing values, then **Fill form**.
+5. Review the website and submit it manually.
+
+Text, email, phone, number, date, textarea, single-select, labelled radio groups and non-consent checkboxes are supported with conservative mapping. Standard names/contact/address/professional fields use aliases and autocomplete attributes. Unknown questions require an exact reviewed custom-field label. Date of birth and gender require the per-fill **Include date of birth and gender** option, or explicit manual entry. Consent, file uploads, passwords, banking, payment and authentication/identity fields are manual and excluded from general profile memory.
+
+Existing values are preserved. **Undo autofill** restores values written by the extension if you have not subsequently edited them. Switching to another person is blocked until the previous person's autofill is undone; later manual changes remain yours to review. Only selected-profile fields are sent to the content script, only on explicit fill. Content scripts cannot search, export or read the database.
+
+For missing fields, type an application answer in the popup and fill, or edit the website after filling and click **Review answers entered on page**. Review proposed changes, resolve conflicts and click **Confirm save to selected profile**. Use **Use once / discard** to avoid saving. New values are never learned silently. They are associated with the selected profile ID and revision; selecting a different person invalidates the pending learning action.
+
+For multi-step/dynamic forms, use the site's Next/Continue manually and **Scan form** again on each step. Changed field labels/types and changed URLs invalidate earlier mappings. Custom widgets, closed shadow DOM, cross-origin frames, CAPTCHA and browser-internal/restricted pages need manual handling or a future site adapter. No automatic submission, authentication bypass or CAPTCHA automation is included. General field detection does not guarantee compatibility with every website.
+
+## Optional local AI
+
+In **Settings**, click **Prepare / enable on-device AI**. This is explicit permission to prepare Chrome's on-device model, which may require a model download. No documents or profiles are sent to a cloud AI service. If the Prompt API is unavailable, the extension explains that standard offline extraction remains usable. The setting/session lasts only for the current interface window; there is no hidden download or background model startup.
+
+Once enabled, TXT/PDF/DOCX free-form extraction uses the local model through `IntelligenceService`; CSV/XLSX continue deterministic row parsing. Model output must contain verbatim supporting quotes. Unsupported values and sensitive fields are discarded, every inferred person is marked for review, and person boundaries still need human confirmation. Inputs are limited to 60,000 characters and 500 inferred records. This provider is experimental: the cloud Chromium model service is unavailable, so provider/validation/error contracts are tested with a simulated session; real model availability and extraction quality need verification in your browser.
+
+## Privacy, upgrade and persistence
+
+Profiles and document references persist in IndexedDB across browser restarts. No raw documents/full extracted text are retained; import staging and AI prompts are temporary. No analytics, remote fonts or backend are used. The extension does not encrypt the database or exports. Browser/OS security and access to your Chrome profile matter. [Privacy policy](docs/privacy-policy.md).
+
+`activeTab` and `scripting` enable user-initiated scans/fills; `storage` handles legacy migration/settings. Optional website access is requested only for the hostname you choose in Settings, and can be revoked there. Persistent permission does not start automatic filling. Current website access is displayed before a scan. No content script runs automatically on every website.
+
+Upgrading from 1.x imports the saved single profile once with **Needs review** status and removes old automatic script registrations. Old generic answer memories are archived in the database and included as `legacyAnswers` in JSON exports, rather than silently assigned to new people. Refresh existing portal tabs after upgrading. Data deletion clears profiles, import metadata, the legacy archive and old storage; it does not remove information already entered on websites. Back up before removing the extension; uninstalling/reinstalling may erase its local database.
+
+## Development and validation
+
+`npm test` includes real parsing/record separation, IndexedDB transactions with fake-indexeddb, 1,500-profile indexed/paged search, duplicate/conflict handling and source-supported AI output validation. `npm run test:browser` runs actual compiled React UI, document worker, local PDF worker and content/background bundles against a real Chromium DOM and IndexedDB through a Chrome API adapter. It covers PDF/DOCX/CSV/XLSX/JSON, selected-person isolation, confirmation-only learning, persistence across reopening/full Chromium restart, undo, errors, blocked database requests and large-list paging.
+
+Cloud Chromium is managed and blocks unpacked extension installation. These tests do **not** verify native extension installation/permission dialogs, service-worker termination behavior, a native on-device model, or authenticated live websites. Load the package in an unmanaged Chrome browser for those checks. Override `CHROMIUM_PATH` for browser tests; `/usr/bin/chromium` is the default. No test changes managed browser policies.
+
+See [architecture and database replacement](docs/ARCHITECTURE.md), [sample import](docs/example-people.csv), and [manual validation checklist](docs/TESTING.md). `npm run package` builds a root-manifest ZIP at `resume-assist.zip` and `downloads/resume-assist.zip`.
+
+Dependency maintenance: the production dependency audit has three moderate entries in Mammoth's CLI chain (`mammoth` / `argparse` / `sprintf-js`), with no high or critical entries. The bundled extension imports Mammoth's browser module, which does not contain that CLI chain. No patched sprintf-js release was available from the configured registry; the obsolete Mammoth downgrade suggested by audit was not applied. ExcelJS's UUID dependency is overridden to the patched CommonJS-compatible `uuid@11.1.1`, with XLSX read/write compatibility exercised in browser tests.

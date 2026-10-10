@@ -1,54 +1,22 @@
-# Resume Assist — publication draft
+# Chrome Web Store listing draft
 
-## Name
+Name: Personal Assist
 
-Resume Assist
+Short description: Import documents into local person profiles, search the right person, and fill forms after review.
 
-## Short description
+Detailed description:
 
-Read resumes attached on enabled job portals, fill matching fields locally, and pause for missing answers.
+Import PDF, Word, TXT, CSV, Excel and JSON files into individual local profiles. Search by name, phone, email or company, select a person, and fill supported website form fields. Review uncertain records and duplicates before saving. Missing details can be saved to the selected person after confirmation. Edit, merge, export and delete your local profiles.
 
-## Detailed description
+Profiles are stored on your device with no cloud account required. Standard parsing works without an AI model. An optional Chrome on-device model assists free-form imports where supported; results require review and a model download may be needed. Scanned images/PDFs need OCR preprocessing, which is not bundled. Existing website values are preserved, undo is available, and forms are submitted manually.
 
-Make repetitive job applications easier with a browser-local resume assistant.
+Compatibility varies with website controls. Complex custom widgets, embedded frames, protected pages and CAPTCHA require manual handling. Do not claim support for every site or native model availability on every machine.
 
-Enable Resume Assist on a job portal once and grant access to that hostname. Attach your text-based PDF, DOCX or TXT resume directly to its application form. Resume Assist reads it locally, fills matching empty fields and shows what needs attention. No separate extension upload is needed. Review filled details and optionally save the detected profile. Existing answers and the original attachment are preserved. Custom uploads, embedded frames and already-stored portal resumes may need manual handling.
+Permission justification:
 
-General field detection is designed for LinkedIn, Naukri, Indeed and company career sites. Portal layouts vary, so custom controls, embedded forms, CAPTCHA and some application steps require manual handling. Compatibility with every portal is not guaranteed.
+- activeTab: temporary website access when the extension is opened.
+- scripting: user-initiated inspection, selected-person filling, and undo on the current tab.
+- storage: preferences and migration of the previous single-profile data. Structured profiles use extension-origin IndexedDB.
+- Optional HTTP/HTTPS host permissions: only the current hostname is requested when the user chooses persistent access in Settings. Access is revocable and never starts automatic filling.
 
-Optional automatic submission is approved separately for each application. It waits for complete, valid details and a recognized final Submit button, then shows a three-second cancellable countdown. Next and Review steps remain manual. Check the portal for its confirmation after a submission attempt.
-
-Your original resume file and extracted full text are not saved. Detected profile details and the application URL are temporarily held in browser-session storage for the tab. Your reviewed profile and answers you choose to remember are stored locally in your browser. Resume parsing does not use an external AI service, and no analytics are included. Uncheck Remember answers for one-off answers. Use Save answers entered on page to explicitly retain edits you make on a scanned portal form. Saved answers are editable/deletable and appear for review on matching questions on the same website. Passwords, verification codes, attachments and consent choices are not remembered. Filling a form shares the entered answers with that website.
-
-Use Delete my saved data to remove your profile. Browser-local storage is not encrypted by the extension.
-
-## Single purpose
-
-Help users complete job applications from resumes attached on enabled portals and explicit answers to missing questions.
-
-## Permission explanations
-
-- activeTab: temporary access to the application page when the user opens the extension.
-- scripting: inject the bundled scanner, autofill logic and optional submission monitor into the selected page.
-- storage: retain reviewed profiles/remembered answers locally and detected drafts temporarily for the browser session; users can delete them.
-- offscreen: run the bundled document parsers locally without a visible tab.
-- optional HTTP/HTTPS host permissions: detect attachments on portals explicitly enabled by the user. Only the chosen hostname is requested, with no ongoing access to all websites by default.
-
-## Data disclosure draft
-
-The extension handles user-supplied resume text, contact information, profile information, and explicit application answers. Parsing runs locally; detected profile details and application URLs are temporarily stored for the browser session. The reviewed profile and answers the user chooses to remember are stored locally; original documents and opted-out one-off answers are not retained by the extension. Remembered questions are associated with website origins and labels. Filled answers are shared with the selected job website, including when the user enables automatic submission.
-
-Use this description to complete the store's current privacy/data-use questionnaire accurately. Do not claim that the extension never handles personal data. It has no analytics, developer-operated backend, sale of data, or remote executable code.
-
-## Items the publisher must supply
-
-- A browser-store developer account and publisher contact details.
-- A public HTTPS URL hosting the included privacy policy.
-- Verify the provided sample UI screenshots and replace them if tested product behavior differs.
-- Any additional graphics requested by the store.
-- Accurate privacy disclosures using the store's current questionnaire.
-- Verification in an unmanaged browser on the job portals claimed in the listing. Cloud tests use local fixtures with a Chrome API adapter, not logged-in live portal accounts.
-
-Upload `resume-assist.zip`, review the listing, then submit for store review. A submitted package is not publicly available until the store approves and publishes it. This listing is a draft and has not been uploaded.
-
-Enabled portals automatically reuse your saved profile on identifiable job application forms, preserving existing answers. Missing fields remain paused for manual entry. With **Remember answers** enabled (default), valid answers entered on the page are saved when you leave the field. Basic contact and address details update your reusable profile; other answers remain website-specific suggestions for review. Uncheck **Remember answers** to disable saving page edits and popup answers; this preference persists. Automatic reuse excludes account forms containing passwords and requires a recognizable resume upload or application text. Use manual scanning for forms that cannot be identified. Resume-derived details still require reviewing and saving the profile for reuse on future applications.
+Publisher actions: add support contact, publish the completed privacy policy, complete Chrome's data-use questionnaire accurately, verify native installation and supported workflows in unmanaged Chrome, and upload current screenshots. This workspace has not submitted the extension to the store.
