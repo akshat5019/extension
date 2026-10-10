@@ -1,10 +1,12 @@
 # Resume Assist privacy policy
 
-Resume Assist helps you fill job application forms using a resume profile you review and answers you provide.
+Resume Assist reads the resume you attach on an enabled job portal and helps fill its application form using detected details and answers you provide.
 
 ## Information processed
 
-The extension reads PDF, DOCX and TXT resume files you select and extracts readable text locally in your browser. It can process contact details, education, skills, employment information and any other information present in that document. The original file and extracted text are not saved by the extension.
+After you enable a portal and grant access to that hostname, the extension detects your native resume/CV file selection and reads PDF, DOCX and TXT files locally. No separate upload to Resume Assist is needed. It can process contact details, education, skills, employment information and other document text. Raw file bytes pass only between the local content script and hidden extension parser in memory. The original file and extracted full text are not saved. The portal’s original upload proceeds normally and is governed by that portal’s privacy policy.
+
+Detected profile details and the application URL are held temporarily in browser-session extension storage for the tab. This draft is removed when the tab closes, the browser session ends, you save its profile/answers, or you delete your saved data. Matching empty application fields are filled immediately, so review them on the portal. Existing answers are preserved.
 
 The profile you review and save is retained in your browser's local extension storage. It is not synchronized through browser sync, and it is not encrypted by this extension. When Remember answers is enabled, manually supplied answers in the extension are saved for future use. You can also explicitly save answers entered on a scanned portal page; only your edits after scanning are captured, not existing/autofilled values. Basic details update the profile. Other answers are saved with their website and question labels as suggestions for review on future applications. Uncheck Remember answers for one-off answers. Passwords, verification codes, financial/identity numbers, consent controls and file attachments are not remembered. Up to 100 remembered questions are retained.
 
@@ -16,11 +18,11 @@ When you ask it to fill a job application, the filled information becomes availa
 
 ## Control and deletion
 
-You can review and edit your profile before use and edit or forget individual remembered answers. Delete my saved data removes both the profile and remembered application answers from the extension's local storage. You can cancel automatic submission from the page panel or extension popup. Deleting local data does not delete applications or information previously shared with job websites.
+You can review automatically filled details, edit/save the detected profile, and edit or forget individual remembered answers. Delete my saved data removes the profile, remembered answers and temporary drafts. Disable on this portal revokes its ongoing upload-detection access. Stop/dismiss upload autofill from its page panel and cancel automatic submission separately. Deleting local data does not delete applications or information previously shared with job websites.
 
 ## Permissions
 
-The extension requests activeTab for temporary access to the page you choose, scripting to scan/fill that page and monitor optional submission, and storage for your saved profile. It does not request access to every website in the background.
+The extension uses activeTab for temporary access when opened, scripting to scan/fill pages and register upload detection, storage for saved details and temporary drafts, and offscreen for local document parsing without a visible tab. Optional HTTP/HTTPS permissions allow enabling individual portals. Access is requested for the specific hostname you choose, persists on that host until revoked, and is not granted for every website by default.
 
 ## Publisher contact
 

@@ -1,19 +1,46 @@
-import { PROFILE_FIELDS, parseResume } from './profile.js';
+import { PROFILE_FIELDS } from './profile.js';
 import { profileValue } from './forms.js';
-import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist';
-import mammoth from 'mammoth/mammoth.browser.js';
 import { canRemember, rememberAnswer, suggestedAnswer } from './answers.js';
+import { portalPattern } from './portal.js';
 
 const $ = id => document.getElementById(id);
-GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('pdf.worker.mjs');
 let profile = {};
 let scan = null;
 let activeTab = null;
 let dirty = false;
 let savedAnswers = {};
+let portalTab;
+let resumeDraftKey;
 const savedAnswerInputs = new Map();
 const profileInputs = new Map();
 const answerInputs = new Map();
+
+async function currentPortal() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) throw new Error('Open a job portal website first.');
+  return { tab, pattern: portalPattern(tab.url), id: `resume-portal-${encodeURIComponent(portalPattern(tab.url))}` };
+}
+$('enablePortal').addEventListener('click', async () => {
+  try {
+    // Request permission directly in the click gesture, before async tab calls.
+    if (!portalTab?.id) throw new Error('Open a job portal website first.');
+    const tab = portalTab, pattern = portalPattern(tab.url), id = `resume-portal-${encodeURIComponent(pattern)}`;
+    if (!await chrome.permissions.request({ origins: [pattern] })) throw new Error('Portal access was not granted. You can still enter your profile manually.');
+    const scripts = await chrome.scripting.getRegisteredContentScripts({ ids: [id] });
+    if (!scripts.length) await chrome.scripting.registerContentScripts([{ id, matches: [pattern], js: ['content.js'], runAt: 'document_idle', persistAcrossSessions: true }]);
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
+    status('Enabled on this portal. Attach your resume on its application form; matching empty fields will fill automatically.');
+  } catch (error) { status(error.message || 'Could not enable this portal.', true); }
+});
+$('disablePortal').addEventListener('click', async () => {
+  try {
+    const { tab, pattern, id } = await currentPortal();
+    if ((await chrome.scripting.getRegisteredContentScripts({ ids: [id] })).length) await chrome.scripting.unregisterContentScripts({ ids: [id] });
+    await chrome.permissions.remove({ origins: [pattern] });
+    await chrome.tabs.sendMessage(tab.id, { type: 'RESUME_CANCEL' }).catch(() => {});
+    status('Disabled on this portal. New resume uploads will not be read.');
+  } catch (error) { status(error.message || 'Could not disable this portal.', true); }
+});
 
 function status(message, error = false) {
   $('status').textContent = message;
@@ -53,6 +80,16 @@ function readProfile() {
   return Object.fromEntries(Array.from(profileInputs, ([key, input]) => [key, input.value.trim()]));
 }
 
+chrome.storage.onChanged?.addListener((changes, area) => {
+  if (area !== 'session' || !portalTab?.id) return;
+  const key = `resumeDraft:${portalTab.id}`, draft = changes[key]?.newValue;
+  if (draft?.url !== portalTab.url) return;
+  const current = Object.fromEntries(PROFILE_FIELDS.map(([field]) => [field, profile[field] || '']));
+  if (JSON.stringify(readProfile()) !== JSON.stringify(current)) { status('New portal resume read. Save your current edits or reopen the extension to review its details.'); return; }
+  resumeDraftKey = key; profile = draft.profile; showProfile();
+  $('fileInfo').textContent = 'Resume read from this portal upload. Review and save this profile for future use.';
+});
+
 function showSavedAnswers() {
   $('savedAnswersList').replaceChildren();
   savedAnswerInputs.clear();
@@ -82,6 +119,7 @@ async function saveEnteredAnswers(fields, origin) {
   }
   if (count) {
     await chrome.storage.local.set({ profile: nextProfile, savedAnswers: nextAnswers });
+    if (resumeDraftKey) { await chrome.storage.session.remove(resumeDraftKey); resumeDraftKey = null; }
     profile = nextProfile; savedAnswers = nextAnswers; showProfile(); showSavedAnswers();
   }
   return count;
@@ -103,6 +141,7 @@ $('savePageAnswers').addEventListener('click', async () => {
   try {
     if (dirty || JSON.stringify(readProfile()) !== JSON.stringify(Object.fromEntries(PROFILE_FIELDS.map(([key]) => [key, profile[key] || ''])))) throw new Error('Save your profile changes first.');
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    portalTab = tab;
     await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content.js'] });
     const entered = await chrome.tabs.sendMessage(tab.id, { type: 'RESUME_MANUAL_ANSWERS' });
     const count = await saveEnteredAnswers(entered.fields, entered.origin);
@@ -111,60 +150,14 @@ $('savePageAnswers').addEventListener('click', async () => {
   finally { $('savePageAnswers').disabled = false; }
 });
 
-async function extractResume(file) {
-  if (file.size > 10 * 1024 * 1024) throw new Error('Choose a resume smaller than 10 MB.');
-  const data = await file.arrayBuffer();
-  const ext = file.name.split('.').at(-1).toLowerCase();
-  let text;
-  if (ext === 'txt') text = new TextDecoder().decode(data);
-  else if (ext === 'docx') text = (await mammoth.extractRawText({ arrayBuffer: data })).value;
-  else if (ext === 'pdf') {
-    const loading = getDocument({ data, isEvalSupported: false, useSystemFonts: true, cMapUrl: chrome.runtime.getURL('cmaps/'), cMapPacked: true, standardFontDataUrl: chrome.runtime.getURL('standard_fonts/'), wasmUrl: chrome.runtime.getURL('wasm/') });
-    try {
-      const pdf = await loading.promise;
-      if (pdf.numPages > 50) throw new Error('Choose a resume with 50 pages or fewer.');
-      const pages = [];
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
-        const content = await page.getTextContent();
-        pages.push(content.items.map(item => item.str + (item.hasEOL ? '\n' : ' ')).join(''));
-      }
-      text = pages.join('\n');
-    } finally { await loading.destroy(); }
-  } else throw new Error('Please choose a PDF, DOCX or TXT file.');
-  if (!text.trim()) throw new Error('No readable text found. For a scanned/image resume, use a text-based PDF, DOCX or TXT, or enter your details below.');
-  if (text.length > 250000) throw new Error('This document contains too much text. Choose a shorter resume.');
-  return text;
-}
-
 $('profileTab').addEventListener('click', () => switchTab(false));
 $('applyTab').addEventListener('click', () => switchTab(true));
-$('resumeFile').addEventListener('change', async event => {
-  const file = event.target.files[0];
-  if (!file) return;
-  event.target.disabled = true;
-  status('Reading your resume locally…');
-  try {
-    const extracted = parseResume(await extractResume(file));
-    const current = readProfile();
-    let added = 0;
-    for (const [key, value] of Object.entries(extracted)) {
-      if (!current[key] && value) { current[key] = value; added++; }
-    }
-    profile = current;
-    dirty = true;
-    showProfile();
-    $('fileInfo').textContent = `Read ${file.name}. The original file is not stored.`;
-    status(`Found ${added} new details. Check your name and contact details, add anything missing, then save your profile.`);
-  } catch (error) { status(error.message || 'Could not read this resume. Enter your details manually.', true); }
-  finally { event.target.disabled = false; event.target.value = ''; }
-});
-
 $('profileForm').addEventListener('submit', async event => {
   event.preventDefault();
   try {
     profile = readProfile();
     await chrome.storage.local.set({ profile });
+    if (resumeDraftKey) { await chrome.storage.session.remove(resumeDraftKey); resumeDraftKey = null; }
     dirty = false;
     scan = null;
     $('answersForm').hidden = true;
@@ -177,6 +170,8 @@ $('deleteData').addEventListener('click', async () => {
   if (!confirm('Delete your saved profile and remembered application answers from this browser?')) return;
   try {
     await chrome.storage.local.remove(['profile', 'savedAnswers']);
+    await chrome.storage.session.clear();
+    resumeDraftKey = null;
     if (activeTab?.id) await chrome.tabs.sendMessage(activeTab.id, { type: 'RESUME_CANCEL' }).catch(() => {});
     profile = {};
     savedAnswers = {};
@@ -301,6 +296,13 @@ async function initialize() {
     const saved = await chrome.storage.local.get(['profile', 'savedAnswers']);
     profile = saved.profile || {};
     savedAnswers = saved.savedAnswers || {};
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    portalTab = tab;
+    if (tab?.id) {
+      const key = `resumeDraft:${tab.id}`;
+      const draft = (await chrome.storage.session.get(key))[key];
+      if (draft?.url === tab.url) { resumeDraftKey = key; profile = draft.profile; $('fileInfo').textContent = 'Resume read from this portal upload. Review and save the profile if you want to keep it.'; }
+    }
     showProfile();
     showSavedAnswers();
   } catch { status('Could not load your saved profile.', true); }

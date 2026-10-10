@@ -7,12 +7,14 @@
     <nav aria-label="Sections"><button id="profileTab" class="tab active" aria-selected="true">01 <span>Your profile</span></button><button id="applyTab" class="tab" aria-selected="false">02 <span>Fill application</span></button></nav>
     <div id="status" role="status" aria-live="polite"></div>
     <section id="profileSection">
-      <div class="section-heading"><h2>Start with your resume</h2><span class="step-tag">STEP 1</span></div>
-      <p class="muted">Import a resume, then check the details we find.</p>
-      <label class="upload" for="resumeFile"><span class="upload-icon">↑</span><strong>Choose your resume</strong><span>PDF, DOCX or TXT · up to 10 MB</span><input id="resumeFile" type="file" accept=".pdf,.docx,.txt"></label>
+      <div class="section-heading"><h2>Attach once. Fill faster.</h2><span class="step-tag">STEP 1</span></div>
+      <p class="muted">Enable this portal, then attach your PDF, DOCX or TXT resume directly on its application form. Resume Assist reads it locally and fills matching empty fields. No separate resume upload here.</p>
+      <button id="enablePortal" class="primary">Enable on this portal <span>→</span></button>
+      <button id="disablePortal" class="text-button danger">Disable on this portal</button>
+      <p class="muted">Up to 10 MB. Review the filled details on the portal. Image-only scans and custom upload widgets may need manual entry.</p>
       <p id="fileInfo" class="file-info"></p>
       <div class="section-heading profile-heading"><h2>Make it yours</h2><span class="step-tag">STEP 2</span></div>
-      <p class="muted">Only the details you confirm will be used.</p>
+      <p class="muted">Review details from your portal upload, or enter them manually. Save to keep this profile for future applications.</p>
       <form id="profileForm"><div id="profileFields" class="field-grid"></div><button class="primary" type="submit">Save profile <span>→</span></button></form>
       <div class="profile-heading"><h2>Remembered application answers</h2><p class="muted">Saved for the same question on the same website. Review these suggestions before using them.</p><form id="savedAnswersForm"><div id="savedAnswersList"></div><button id="saveRemembered" type="submit" class="primary" hidden>Save answer changes</button></form></div>
       <button id="deleteData" class="text-button danger">Delete my saved data</button>

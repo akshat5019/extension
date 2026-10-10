@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createServer } from 'node:http';
 
-let context, popup, job, server, temporary;
+let context, popup, job, server, temporary, background, parser;
 const useExtension = process.env.RESUME_TEST_EXTENSION === '1';
 const fixture = `<!doctype html><title>Application fixture</title><h1>Apply</h1><form>
 <label>First name<input id="firstName" name="firstName"></label>
@@ -24,6 +24,7 @@ test.beforeAll(async () => {
   server = createServer(async (req, res) => {
     const path = new URL(req.url, 'http://localhost').pathname;
     if (path === '/fixture') { res.setHeader('Content-Type', 'text/html'); res.end(fixture); return; }
+    if (path === '/background-runner') { res.setHeader('Content-Type', 'text/html'); res.end('<script src="background.js"></script>'); return; }
     try {
       const file = join(resolve('dist'), path === '/' ? 'popup.html' : path.slice(1));
       res.setHeader('Content-Type', path.endsWith('.js') || path.endsWith('.mjs') ? 'application/javascript' : path.endsWith('.css') ? 'text/css' : path.endsWith('.bcmap') ? 'application/octet-stream' : 'text/html');
@@ -55,37 +56,91 @@ test.beforeAll(async () => {
   } else {
     // Browser integration mode exercises the actual bundles and DOM under CSP.
     // Only Chrome's APIs are adapted; this does not test extension permissions.
-    const storage = {};
-    await context.exposeBinding('__resumeStorage', (_source, operation, data) => {
+    const stores = { local: {}, session: {} }, permissions = new Set(), scripts = new Map();
+    await context.exposeBinding('__resumeStorage', async (_source, area, operation, data) => {
+      const storage = stores[area];
+      const before = structuredClone(storage);
       if (operation === 'set') Object.assign(storage, data);
       if (operation === 'remove') for (const key of Array.isArray(data) ? data : [data]) delete storage[key];
+      if (operation === 'clear') for (const key of Object.keys(storage)) delete storage[key];
+      if (operation !== 'get') {
+        const changes = Object.fromEntries([...new Set([...Object.keys(before), ...Object.keys(storage)])].filter(key => JSON.stringify(before[key]) !== JSON.stringify(storage[key])).map(key => [key, { oldValue: before[key], newValue: storage[key] }]));
+        await Promise.all(context.pages().map(page => page.evaluate(({ changes, area }) => {
+          for (const listener of globalThis.__resumeStorageListeners || []) listener(changes, area);
+        }, { changes, area }).catch(() => {})));
+      }
       return data === null || operation !== 'get' ? structuredClone(storage) : Object.fromEntries((Array.isArray(data) ? data : [data]).filter(key => storage[key] !== undefined).map(key => [key, structuredClone(storage[key])]));
     });
-    await context.exposeBinding('__resumeTabs', () => [{ id: 1, url: `${url}/fixture` }]);
+    await context.exposeBinding('__resumeTabs', () => [{ id: 1, url: job?.url() || `${url}/fixture` }]);
+    await context.exposeBinding('__resumePermissions', (_source, operation, data) => {
+      if (operation === 'request') data.origins.forEach(origin => permissions.add(origin));
+      if (operation === 'remove') data.origins.forEach(origin => permissions.delete(origin));
+      return operation === 'contains' ? data.origins.every(origin => permissions.has(origin)) : true;
+    });
+    await context.exposeBinding('__resumeScripts', (_source, operation, data) => {
+      if (operation === 'register') data.forEach(script => scripts.set(script.id, script));
+      if (operation === 'unregister') data.ids.forEach(id => scripts.delete(id));
+      return [...scripts.values()].filter(script => !data.ids || data.ids.includes(script.id));
+    });
+    await context.exposeBinding('__resumeOffscreen', async (_source, operation) => {
+      if (operation === 'has') return !!parser;
+      parser = await context.newPage(); await parser.goto(`${url}/offscreen.html`);
+    });
+    const deliver = (page, message, sender) => page.evaluate(({ message, sender }) => new Promise(resolve => {
+      let waiting = false, answered = false;
+      const respond = value => { answered = true; resolve(value); };
+      for (const listener of globalThis.__resumeListeners) if (listener(message, sender, respond) === true) waiting = true;
+      if (!waiting && !answered) resolve(undefined);
+    }), { message, sender });
+    await context.exposeBinding('__resumeRuntime', async ({ page }, message) => {
+      const sender = { id: 'test-extension', ...(page === job ? { tab: { id: 1 }, frameId: 0, url: job.url() } : {}) };
+      return deliver(message.type === 'OFFSCREEN_PARSE_RESUME' ? parser : background, message, sender);
+    });
     await context.exposeBinding('__resumeInject', async () => { await job.addScriptTag({ path: resolve('dist/content.js') }); });
     await context.exposeBinding('__resumeMessage', async (_source, message) => job.evaluate(message => new Promise(resolve => {
       for (const listener of globalThis.__resumeListeners) listener(message, { id: 'test-extension' }, resolve);
     }), message));
     await context.addInitScript(({ url }) => {
       globalThis.__resumeListeners = [];
-      const runtime = { id: 'test-extension', getURL: path => `${url}/${path}`, onMessage: { addListener: listener => globalThis.__resumeListeners.push(listener) } };
-      const storage = { local: { get: keys => window.__resumeStorage('get', keys), set: data => window.__resumeStorage('set', data), remove: key => window.__resumeStorage('remove', key), setAccessLevel: async () => {} } };
-      Object.assign(window.chrome, { runtime, storage, tabs: { query: () => window.__resumeTabs(), sendMessage: (_id, message) => window.__resumeMessage(message) }, scripting: { executeScript: () => window.__resumeInject() } });
+      globalThis.__resumeStorageListeners = [];
+      const runtime = { id: 'test-extension', getURL: path => `${url}/${path}`, onMessage: { addListener: listener => globalThis.__resumeListeners.push(listener) }, onInstalled: { addListener: () => {} }, sendMessage: message => window.__resumeRuntime(message) };
+      const storage = Object.fromEntries(['local', 'session'].map(area => [area, { get: keys => window.__resumeStorage(area, 'get', keys), set: data => window.__resumeStorage(area, 'set', data), remove: key => window.__resumeStorage(area, 'remove', key), clear: () => window.__resumeStorage(area, 'clear'), setAccessLevel: async () => {} }]));
+      storage.onChanged = { addListener: listener => globalThis.__resumeStorageListeners.push(listener) };
+      Object.assign(window.chrome, { runtime, storage, permissions: { request: data => window.__resumePermissions('request', data), contains: data => window.__resumePermissions('contains', data), remove: data => window.__resumePermissions('remove', data) }, offscreen: { hasDocument: () => window.__resumeOffscreen('has'), createDocument: () => window.__resumeOffscreen('create') }, tabs: { query: () => window.__resumeTabs(), get: async () => (await window.__resumeTabs())[0], onRemoved: { addListener: () => {} }, sendMessage: (_id, message) => window.__resumeMessage(message) }, scripting: { executeScript: () => window.__resumeInject(), getRegisteredContentScripts: data => window.__resumeScripts('get', data), registerContentScripts: data => window.__resumeScripts('register', data), unregisterContentScripts: data => window.__resumeScripts('unregister', data) } });
     }, { url });
+    background = await context.newPage(); await background.goto(`${url}/background-runner`);
   }
   job = await context.newPage();
   await job.goto(`${url}/fixture`);
   popup = await context.newPage();
   await popup.goto(popupUrl);
 });
+
+async function portalUpload(file) {
+  await popup.locator('#enablePortal').click();
+  await expect(popup.locator('#status')).toContainText('Enabled on this portal');
+  if (typeof file !== 'string') {
+    const path = join(temporary, file.name);
+    await writeFile(path, file.buffer);
+    file = path;
+  }
+  // A native filesystem selection produces a trusted change event. Playwright's
+  // in-memory payload path dispatches synthetic events, deliberately ignored.
+  await job.locator('#attachment').setInputFiles(file);
+  await expect(job.locator('#resume-assist-upload')).toHaveAttribute('data-state', 'complete');
+  await expect(popup.locator('#fileInfo')).toContainText('Resume read from this portal upload');
+  await popup.reload();
+}
 test.afterAll(async () => {
   await context?.close();
   if (server) await new Promise(resolve => server.close(resolve));
   if (temporary) await rm(temporary, { recursive: true, force: true });
 });
 
-test('imports a resume, asks for missing answers, fills and preserves existing answers', async () => {
-  await popup.locator('#resumeFile').setInputFiles({ name: 'resume.txt', mimeType: 'text/plain', buffer: Buffer.from('Akshat Sharma\nakshat@example.com\n9876543210\nCountry: India') });
+test('reads the portal attachment without a popup import, then fills and preserves existing answers', async () => {
+  await portalUpload({ name: 'resume.txt', mimeType: 'text/plain', buffer: Buffer.from('Akshat Sharma\nakshat@example.com\n9876543210\nCountry: India') });
+  expect(await job.locator('#attachment').evaluate(el => el.files.length)).toBe(1);
+  await expect(job.locator('#firstName')).toHaveValue('Akshat');
   await expect(popup.locator('#profile-firstName')).toHaveValue('Akshat');
   await expect(popup.locator('#profile-email')).toHaveValue('akshat@example.com');
   await popup.locator('#profileForm button').click();
@@ -184,14 +239,15 @@ test('retains saved profile across reopening and deletes it on request', async (
   expect(await popup.evaluate(async () => await chrome.storage.local.get('savedAnswers'))).toEqual({});
 });
 
-test('requires review of imported details and skips fields changed since scanning', async () => {
+test('makes the portal-upload draft available and skips fields changed since scanning', async () => {
   await job.reload();
   await popup.reload();
-  await popup.locator('#resumeFile').setInputFiles({ name: 'resume.txt', mimeType: 'text/plain', buffer: Buffer.from('Akshat Sharma\nakshat@example.com\n9876543210') });
+  await portalUpload({ name: 'resume.txt', mimeType: 'text/plain', buffer: Buffer.from('Akshat Sharma\nakshat@example.com\n9876543210') });
   await expect(popup.locator('#profile-firstName')).toHaveValue('Akshat');
   await popup.locator('#applyTab').click();
   await popup.evaluate(() => document.querySelector('#scanPage').click());
-  await expect(popup.locator('#status')).toContainText('Save your profile changes');
+  await expect(popup.locator('#scanSummary')).toBeVisible();
+  await popup.locator('#profileTab').click();
   await popup.locator('#profileForm button').click();
   await popup.locator('#applyTab').click();
   await popup.evaluate(() => document.querySelector('#scanPage').click());
@@ -213,8 +269,8 @@ test('requires review of imported details and skips fields changed since scannin
 
 test('reads text-based PDF and DOCX with the extension CSP and local worker', async () => {
   for (const name of ['resume.pdf', 'resume.docx']) {
-    await popup.locator('#resumeFile').setInputFiles(resolve('tests/fixtures', name));
-    await expect(popup.locator('#status')).toContainText('Found');
+    await job.reload(); await popup.reload();
+    await portalUpload(resolve('tests/fixtures', name));
     await expect(popup.locator('#profile-email')).toHaveValue('akshat@example.com');
     popup.once('dialog', dialog => dialog.accept());
     await popup.locator('#deleteData').click();
@@ -246,6 +302,8 @@ test('autofills first, pauses for required details, then automatically attempts 
   await job.waitForTimeout(500);
   expect(await job.evaluate(() => window.submitted)).toBe(false);
   await job.locator('#attachment').setInputFiles(resolve('tests/fixtures/resume.pdf'));
+  await expect(job.locator('#resume-assist-upload')).toHaveAttribute('data-state', 'complete');
+  await popup.evaluate(() => document.querySelector('#scanPage').click());
   await expect.poll(() => job.evaluate(() => window.submissions)).toBe(1);
   await job.waitForTimeout(1200);
   expect(await job.evaluate(() => window.submissions)).toBe(1);
@@ -267,4 +325,52 @@ test('cancels automatic submission during the countdown', async () => {
   await expect(popup.locator('#status')).toContainText('cancelled');
   await job.waitForTimeout(3500);
   expect(await job.evaluate(() => window.submitted)).toBe(false);
+});
+
+test('does not read new uploads after the portal is disabled', async () => {
+  test.skip(useExtension, 'The real-extension fixture declares required host access; permission revocation is tested with the Chrome API adapter.');
+  await job.reload(); await popup.reload();
+  await popup.locator('#enablePortal').click();
+  await expect(popup.locator('#status')).toContainText('Enabled on this portal');
+  await popup.locator('#disablePortal').click();
+  await expect(popup.locator('#status')).toContainText('Disabled on this portal');
+  await popup.evaluate(() => chrome.storage.session.clear());
+  await job.locator('#attachment').setInputFiles(resolve('tests/fixtures/resume.pdf'));
+  await job.waitForTimeout(500);
+  await expect(job.locator('#firstName')).toHaveValue('');
+  await expect(job.locator('#resume-assist-upload')).toHaveCount(0);
+  expect(await popup.evaluate(() => chrome.storage.session.get(null))).toEqual({});
+});
+
+test('ignores cover-letter attachments and reports unreadable resumes without filling', async () => {
+  await job.reload(); await popup.reload();
+  await popup.locator('#enablePortal').click();
+  await expect(popup.locator('#status')).toContainText('Enabled on this portal');
+  await job.evaluate(() => {
+    const label = document.createElement('label'); label.textContent = 'Cover letter';
+    const input = document.createElement('input'); input.type = 'file'; input.id = 'cover';
+    label.append(input); document.querySelector('form').append(label);
+  });
+  await job.locator('#cover').setInputFiles(resolve('tests/fixtures/resume.pdf'));
+  await job.waitForTimeout(500);
+  await expect(job.locator('#resume-assist-upload')).toHaveCount(0);
+  const blank = join(temporary, 'blank-resume.txt'); await writeFile(blank, '');
+  await job.locator('#attachment').setInputFiles(blank);
+  await expect(job.locator('#resume-assist-upload')).toHaveAttribute('data-state', 'error');
+  await expect(job.locator('#firstName')).toHaveValue('');
+  expect(await popup.evaluate(() => chrome.storage.session.get(null))).toEqual({});
+});
+
+test('an older upload cannot replace a newer resume draft', async () => {
+  test.skip(useExtension, 'This transport-level test uses the Chrome API adapter; page scripts cannot call extension runtime APIs in real Chrome.');
+  const result = await job.evaluate(async () => {
+    const message = { type: 'PORTAL_RESUME_UPLOADED', url: location.href, name: 'resume.txt', uploader: 'ordering-test' };
+    const newer = await chrome.runtime.sendMessage({ ...message, sequence: 20, data: btoa('Newer Candidate\nnewer@example.com') });
+    const older = await chrome.runtime.sendMessage({ ...message, sequence: 19, data: btoa('Older Candidate\nolder@example.com') });
+    return { newer, older };
+  });
+  expect(result.newer.profile.firstName).toBe('Newer');
+  expect(result.older.error).toContain('newer resume');
+  const drafts = await popup.evaluate(() => chrome.storage.session.get(null));
+  expect(Object.values(drafts)[0].profile.email).toBe('newer@example.com');
 });

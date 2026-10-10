@@ -31,7 +31,7 @@ try {
     ], embeddedForms: 0, customControls: 0 };
     Object.assign(window.chrome, {
       runtime: { getURL: path => `${url}/${path}` },
-      storage: { local: { get: async () => ({ profile }), setAccessLevel: async () => {} } },
+      storage: { local: { get: async () => ({ profile }), setAccessLevel: async () => {} }, session: { get: async () => ({}) } },
       tabs: { query: async () => [{ id: 1, url: 'https://example.com/application' }], sendMessage: async (_tab, message) => message.type === 'RESUME_SCAN' ? scan : { filled: 2, skipped: 0, manual: [] } },
       scripting: { executeScript: async () => {} },
     });
