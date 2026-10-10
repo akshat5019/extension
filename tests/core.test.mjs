@@ -19,7 +19,7 @@ await build({
 const { LocalRepository } = await import("../.test-core/repository.js");
 const { extractCSV, extractPeople } =
   await import("../.test-core/extraction.js");
-const { combine } = await import("../.test-core/model.js");
+const { combine, completeNameFields } = await import("../.test-core/model.js");
 const { mapper } = await import("../.test-core/mapping.js");
 const { validateModelRecords } = await import("../.test-core/ai.js");
 let repository;
@@ -41,6 +41,9 @@ test("separates CSV rows and labelled people without pooling identifiers", () =>
   assert.equal(people.candidates.length, 2);
   assert.equal(people.candidates[0].fields.phone, "9876543210");
   assert.equal(people.candidates[1].fields.email, "priya@example.com");
+  assert.equal(people.candidates[0].fields.firstName, "Rahul");
+  assert.equal(people.candidates[0].fields.lastName, "Sharma");
+  assert.equal(people.candidates[1].fields.firstName, "Priya");
   assert.throws(
     () =>
       extractPeople(
@@ -53,8 +56,86 @@ test("structured imports exclude authentication and banking fields", () => {
   const { candidates, warnings } = extractCSV(
     "Name,Password,Bank Account Number,Email\nRahul Sharma,secret,123456,rahul@example.com",
   );
-  assert.deepEqual(Object.keys(candidates[0].fields), ["fullName", "email"]);
+  assert.deepEqual(Object.keys(candidates[0].fields), [
+    "fullName",
+    "email",
+    "firstName",
+    "lastName",
+  ]);
   assert.equal(warnings.length, 2);
+});
+test("prepares resume name parts without retyping and preserves explicit names", () => {
+  const candidate = extractPeople(
+    "Akshat Kumar Sharma\nSoftware Engineer\nakshat@example.com\n9876543210\nEducation\nNational Technical Institute\nProjects\nJob Application Assistant",
+  ).candidates[0];
+  assert.equal(candidate.fields.fullName, "Akshat Kumar Sharma");
+  assert.equal(candidate.fields.firstName, "Akshat");
+  assert.equal(candidate.fields.middleName, "Kumar");
+  assert.equal(candidate.fields.lastName, "Sharma");
+  const explicit = completeNameFields({
+    fullName: "Mary Ann de la Cruz",
+    firstName: "Mary Ann",
+    lastName: "de la Cruz",
+  });
+  assert.equal(explicit.firstName, "Mary Ann");
+  assert.equal(explicit.lastName, "de la Cruz");
+  assert.equal(explicit.middleName, undefined);
+  assert.equal(
+    completeNameFields({ firstName: "Akshat", lastName: "Sharma" }).fullName,
+    "Akshat Sharma",
+  );
+  assert.equal(completeNameFields({ fullName: "Prince" }).firstName, "Prince");
+  assert.equal(completeNameFields({ fullName: "Prince" }).lastName, undefined);
+  assert.equal(
+    completeNameFields({ fullName: "Rahul Sharma", firstName: "Priya" })
+      .lastName,
+    undefined,
+  );
+  assert.equal(
+    completeNameFields({ fullName: ["Rahul Sharma", "Priya Gupta"] }).firstName,
+    undefined,
+  );
+  assert.equal(
+    completeNameFields({ fullName: "Rahul Sharma / Priya Gupta" }).firstName,
+    undefined,
+  );
+  const ambiguous = extractPeople(
+    "Rahul Sharma\nPriya Gupta\nrahul@example.com\nEducation\nNational Technical Institute",
+  ).candidates[0];
+  assert.equal(ambiguous.fields.fullName, undefined);
+  assert.equal(ambiguous.fields.firstName, undefined);
+});
+test("fills name fields for existing full-name-only profiles without database changes", () => {
+  const old = { fullName: "Akshat Kumar Sharma", email: "akshat@example.com" };
+  for (const [label, key, value] of [
+    ["Name (required)", "fullName", "Akshat Kumar Sharma"],
+    ["Legal First Name", "firstName", "Akshat"],
+    ["Middle name", "middleName", "Kumar"],
+    ["Family Name", "lastName", "Sharma"],
+  ]) {
+    assert.equal(mapper.key(label), key);
+    assert.equal(mapper.value(old, { label, key }), value);
+  }
+  assert.equal(mapper.key("Middle", "additional-name"), "middleName");
+  assert.equal(old.firstName, undefined);
+  assert.equal(
+    mapper.value(
+      { fullName: ["Rahul Sharma", "Priya Gupta"] },
+      { key: "firstName", label: "First name" },
+    ),
+    "",
+  );
+  assert.equal(
+    mapper.value(
+      {
+        fullName: "Mary Ann de la Cruz",
+        firstName: "Mary Ann",
+        lastName: "de la Cruz",
+      },
+      { key: "lastName", label: "Last name" },
+    ),
+    "de la Cruz",
+  );
 });
 test("indexed partial search is paged across thousands of persisted people", async () => {
   const records = Array.from({ length: 1500 }, (_, i) => ({

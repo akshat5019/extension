@@ -1,5 +1,12 @@
 import { classifyField, describeField } from "../forms.js";
-import { labelKey, sensitive, display, personName, type Fields } from "./model";
+import {
+  labelKey,
+  sensitive,
+  display,
+  personName,
+  completeNameFields,
+  type Fields,
+} from "./model";
 import { mapColumn } from "./extraction";
 export interface FormField {
   id: string;
@@ -29,7 +36,7 @@ export class LocalFieldMapper implements FieldMapper {
       mapped === "dateOfBirth" ||
       mapped === "gender" ||
       mapped === "permanentAddress" ||
-      mapped === "middleName"
+      ["fullName", "firstName", "middleName", "lastName"].includes(mapped || "")
     )
       return mapped;
     return mapped?.startsWith("custom:") ? `custom:${labelKey(label)}` : null;
@@ -50,7 +57,10 @@ export class LocalFieldMapper implements FieldMapper {
       return "";
     if (field.key === "fullName")
       return personName(fields) === "Unnamed profile" ? "" : personName(fields);
-    const value = fields[field.key]; // Alternate values require explicit review.
+    // Also support previously saved profiles that contain only a full name.
+    const value = ["firstName", "middleName", "lastName"].includes(field.key)
+      ? completeNameFields(fields)[field.key]
+      : fields[field.key]; // Alternate values require explicit review.
     return Array.isArray(value) ? "" : display(value);
   }
 }

@@ -1,4 +1,4 @@
-import { cleanFields, type Fields } from "./model";
+import { cleanFields, completeNameFields, type Fields } from "./model";
 import type { Extraction, IntelligenceService } from "./extraction";
 export interface ModelSession {
   prompt(input: string): Promise<string>;
@@ -40,7 +40,11 @@ export function validateModelRecords(
         }
         fields[key] = value.value;
       }
-      return { fields: cleanFields(fields), record: index + 1, warnings };
+      return {
+        fields: completeNameFields(cleanFields(fields)),
+        record: index + 1,
+        warnings,
+      };
     })
     .filter((c: any) => Object.keys(c.fields).length);
   if (!candidates.length)

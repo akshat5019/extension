@@ -575,6 +575,13 @@ function App() {
             Select a person, scan, then fill. Existing values remain unchanged.
             Forms are submitted manually.
           </p>
+          <p>
+            Import your resume once to prepare full, first and last names.
+            Select its saved profile to fill supported name and contact fields.
+          </p>
+          <button disabled={busy} onClick={() => setView("import")}>
+            Import resume
+          </button>
           <label className="check">
             <input
               type="checkbox"
@@ -640,46 +647,64 @@ function App() {
                           ? "Matching profile value ready"
                           : "Missing or requires manual review")}
                   </small>
-                  {!f.current && !f.reason && f.key && (
-                    <label>
-                      Answer for this application
-                      {f.options ? (
-                        <select
-                          aria-label={`Answer ${f.label}`}
-                          value={answers[f.id] || ""}
-                          onChange={(e) =>
-                            setAnswers((a) => ({
-                              ...a,
-                              [f.id]: e.target.value,
-                            }))
-                          }
-                        >
-                          <option value="">Choose…</option>
-                          {f.options.map((o) => (
-                            <option key={o.value} value={o.value}>
-                              {o.label}
-                            </option>
-                          ))}
-                        </select>
-                      ) : (
-                        <input
-                          aria-label={`Answer ${f.label}`}
-                          type={
-                            ["email", "date", "number", "tel"].includes(f.type)
-                              ? f.type
-                              : "text"
-                          }
-                          value={answers[f.id] || ""}
-                          onChange={(e) =>
-                            setAnswers((a) => ({
-                              ...a,
-                              [f.id]: e.target.value,
-                            }))
-                          }
-                        />
-                      )}
-                    </label>
-                  )}
+                  {!f.current &&
+                    !f.reason &&
+                    f.key &&
+                    !(
+                      [
+                        "fullName",
+                        "firstName",
+                        "middleName",
+                        "lastName",
+                      ].includes(f.key) &&
+                      mapper.value(
+                        selected?.fields || {},
+                        f,
+                        includePersonal,
+                      ) &&
+                      !fillReport.find((r) => r.id === f.id)?.reason
+                    ) && (
+                      <label>
+                        Answer for this application
+                        {f.options ? (
+                          <select
+                            aria-label={`Answer ${f.label}`}
+                            value={answers[f.id] || ""}
+                            onChange={(e) =>
+                              setAnswers((a) => ({
+                                ...a,
+                                [f.id]: e.target.value,
+                              }))
+                            }
+                          >
+                            <option value="">Choose…</option>
+                            {f.options.map((o) => (
+                              <option key={o.value} value={o.value}>
+                                {o.label}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <input
+                            aria-label={`Answer ${f.label}`}
+                            type={
+                              ["email", "date", "number", "tel"].includes(
+                                f.type,
+                              )
+                                ? f.type
+                                : "text"
+                            }
+                            value={answers[f.id] || ""}
+                            onChange={(e) =>
+                              setAnswers((a) => ({
+                                ...a,
+                                [f.id]: e.target.value,
+                              }))
+                            }
+                          />
+                        )}
+                      </label>
+                    )}
                 </article>
               ))}
               <button
@@ -922,6 +947,13 @@ function App() {
             {intelligence
               ? "On-device AI is enabled for free-form text; verify every inferred record."
               : "Standard local extraction is active."}
+          </p>
+          <p>
+            Resume names are prepared as full, first, middle and last names for
+            autofill. Review the suggested split below; explicit name parts in
+            your document are preserved. Name order varies between people.
+            Importing here reads your resume; attach the file separately when
+            the job portal asks for a resume upload.
           </p>
           <label className="upload">
             Choose document

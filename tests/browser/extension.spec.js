@@ -237,6 +237,114 @@ async function seed() {
   await confirmImport();
 }
 
+test("imports a resume and fills full, first, middle and last names without manual answers", async () => {
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const page = pdf.addPage();
+  [
+    "Akshat Kumar Sharma",
+    "Software Engineer",
+    "akshat@example.com",
+    "9876543210",
+    "Education",
+    "National Technical Institute",
+    "Projects",
+    "Job Application Assistant",
+  ].forEach((line, i) =>
+    page.drawText(line, { x: 40, y: 740 - i * 24, size: 12, font }),
+  );
+  await popup
+    .getByRole("button", { name: "Import resume", exact: true })
+    .click();
+  await upload("akshat-resume.pdf", await pdf.save());
+  await expect(popup.getByLabel("Full name", { exact: true })).toHaveValue(
+    "Akshat Kumar Sharma",
+  );
+  await expect(popup.getByLabel("First name", { exact: true })).toHaveValue(
+    "Akshat",
+  );
+  await expect(popup.getByLabel("Middle name", { exact: true })).toHaveValue(
+    "Kumar",
+  );
+  await expect(popup.getByLabel("Last name", { exact: true })).toHaveValue(
+    "Sharma",
+  );
+  await popup.getByLabel("Record decision").selectOption("create");
+  await confirmImport();
+  await select("Akshat Kumar Sharma");
+  await job.evaluate(() => {
+    const section = document.createElement("div");
+    section.innerHTML =
+      '<label>Legal First Name *<input id="given" required></label><label>Middle Name<input id="middle" autocomplete="additional-name"></label><label>Last Name *<input id="family" required></label><label>Upload Resume<input id="resume-file" type="file" required></label>';
+    document.querySelector("form").prepend(section);
+  });
+  await popup.getByRole("button", { name: "Scan form", exact: true }).click();
+  // Known names should be ready for filling, without asking the user to retype.
+  await expect(popup.getByLabel("Answer Legal First Name *")).toHaveCount(0);
+  await popup
+    .getByRole("button", { name: "Fill form", exact: true })
+    .last()
+    .click();
+  await expect(job.locator("#name")).toHaveValue("Akshat Kumar Sharma");
+  await expect(job.locator("#given")).toHaveValue("Akshat");
+  await expect(job.locator("#middle")).toHaveValue("Kumar");
+  await expect(job.locator("#family")).toHaveValue("Sharma");
+  await expect(job.locator("#email")).toHaveValue("akshat@example.com");
+  await expect(job.locator("#phone")).toHaveValue("9876543210");
+  await expect(job.locator("#resume-file")).toHaveValue("");
+  expect(await job.evaluate(() => window.submitted)).toBe(false);
+  await popup.getByRole("button", { name: "Undo autofill" }).click();
+  await expect(job.locator("#given")).toHaveValue("");
+  await expect(job.locator("#family")).toHaveValue("");
+});
+
+test("fills older full-name-only profiles, preserves existing names and uses native name events", async () => {
+  await popup.evaluate(async () => {
+    const r = await chrome.runtime.sendMessage({
+      type: "DB_SAVE",
+      fields: { fullName: "Priya Sharma", email: "priya@example.com" },
+    });
+    if (r.error) throw new Error(r.error);
+  });
+  await popup.reload();
+  await select("Priya Sharma");
+  await job.evaluate(() => {
+    const section = document.createElement("div");
+    section.innerHTML =
+      '<label>First Name<input id="given" value="Already entered"></label><label>Family Name<input id="family"></label>';
+    document.querySelector("form").prepend(section);
+    window.nameEvents = [];
+    document
+      .querySelector("#family")
+      .addEventListener("input", () => window.nameEvents.push("input"));
+    document
+      .querySelector("#family")
+      .addEventListener("change", () => window.nameEvents.push("change"));
+  });
+  await popup.getByRole("button", { name: "Scan form", exact: true }).click();
+  await popup
+    .getByRole("button", { name: "Fill form", exact: true })
+    .last()
+    .click();
+  await expect(job.locator("#given")).toHaveValue("Already entered");
+  await expect(job.locator("#family")).toHaveValue("Sharma");
+  await expect(job.locator("#name")).toHaveValue("Priya Sharma");
+  expect(await job.evaluate(() => window.nameEvents)).toEqual([
+    "input",
+    "change",
+  ]);
+  const stored = await popup.evaluate(
+    async () =>
+      (await chrome.runtime.sendMessage({ type: "DB_SEARCH", query: "Priya" }))
+        .result.items[0],
+  );
+  expect(stored.fields.firstName).toBeUndefined();
+  expect(stored.fields.lastName).toBeUndefined();
+  await popup.getByRole("button", { name: "Undo autofill" }).click();
+  await expect(job.locator("#given")).toHaveValue("Already entered");
+  await expect(job.locator("#family")).toHaveValue("");
+});
+
 test("imports multiple people, requires selection, fills only one person, confirms learning and supports undo", async () => {
   await seed();
   await select("Rahul Sharma");

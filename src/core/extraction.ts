@@ -1,5 +1,11 @@
 import Papa from "papaparse";
-import { cleanFields, labelKey, sensitive, type Fields } from "./model";
+import {
+  cleanFields,
+  completeNameFields,
+  labelKey,
+  sensitive,
+  type Fields,
+} from "./model";
 export interface Candidate {
   fields: Fields;
   warnings: string[];
@@ -137,7 +143,7 @@ export function rowsToRecords(rows: unknown[][]): Extraction {
       continue;
     }
     candidates.push({
-      fields: cleanFields(fields),
+      fields: completeNameFields(cleanFields(fields)),
       warnings: issues,
       record: i,
     });
@@ -226,7 +232,26 @@ export function extractPeople(text: string): Extraction {
             x,
           ),
       );
-      if (names.length === 1) fields.fullName = names[0];
+      const header = block
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .slice(0, 5);
+      const contactIndex = header.findIndex(
+        (line) =>
+          (emails[0] && line.includes(emails[0])) ||
+          (phones[0] && line.includes(phones[0])),
+      );
+      const resumeHeader =
+        names.includes(header[0]) &&
+        contactIndex > 0 &&
+        emails.length <= 1 &&
+        phones.length <= 1 &&
+        header.slice(1, contactIndex).every((line) => !names.includes(line)) &&
+        /\b(resume|curriculum|education|experience|skills|engineer|developer)\b/i.test(
+          safeText,
+        );
+      if (names.length === 1 || resumeHeader)
+        fields.fullName = resumeHeader ? header[0] : names[0];
       else if (names.length > 1)
         issues.push(
           "Several possible names. Assign a name manually; no names were pooled.",
@@ -242,7 +267,7 @@ export function extractPeople(text: string): Extraction {
       );
     if (Object.keys(fields).length)
       candidates.push({
-        fields: cleanFields(fields),
+        fields: completeNameFields(cleanFields(fields)),
         warnings: issues,
         record: candidates.length + 1,
       });

@@ -84,6 +84,48 @@ export const personName = (f: Fields) =>
   display(f.fullName) ||
   [f.firstName, f.middleName, f.lastName].filter(Boolean).join(" ") ||
   "Unnamed profile";
+// Name order varies: these are reviewable suggestions, never unique identity keys.
+// Preserve explicit components, including compound given/family names.
+export function completeNameFields(fields: Fields): Fields {
+  const keys = ["fullName", "firstName", "middleName", "lastName"];
+  if (keys.some((key) => Array.isArray(fields[key]))) return { ...fields };
+  const out = { ...fields };
+  const full = display(fields.fullName).trim().replace(/\s+/g, " ");
+  if (!full) {
+    const parts = keys
+      .slice(1)
+      .map((key) => display(fields[key]).trim())
+      .filter(Boolean);
+    if (parts.length) out.fullName = parts.join(" ");
+    return out;
+  }
+  // Do not interpret multiple names, lists or machine identifiers as one name.
+  if (!/^[\p{L}][\p{L}\p{M} .’'-]*$/u.test(full)) return out;
+  const words = full.split(" ");
+  if (words.length > 10) return out;
+  const first = display(fields.firstName).trim();
+  const last = display(fields.lastName).trim();
+  const middle = display(fields.middleName).trim();
+  if (
+    (first &&
+      !normal(full).startsWith(
+        normal(first) + (normal(full) === normal(first) ? "" : " "),
+      )) ||
+    (last && !normal(full).endsWith(" " + normal(last)))
+  )
+    return out;
+  const firstCount = first ? first.split(/\s+/).length : 1;
+  const lastCount = last ? last.split(/\s+/).length : words.length > 1 ? 1 : 0;
+  if (firstCount + lastCount > words.length) return out;
+  const inferredMiddle = words
+    .slice(firstCount, words.length - lastCount)
+    .join(" ");
+  if (middle && normal(middle) !== normal(inferredMiddle)) return out;
+  if (!first) out.firstName = words.slice(0, firstCount).join(" ");
+  if (!last && lastCount) out.lastName = words.slice(-lastCount).join(" ");
+  if (!middle && inferredMiddle) out.middleName = inferredMiddle;
+  return out;
+}
 export function sensitive(label: string) {
   label = label.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]/g, " ");
   return /password|passcode|captcha|one[ -]?time|\botp\b|verification code|social security|\bssn\b|passport|national (?:id|identity)|aadhaar|aadhar|pan (?:card|number)|bank|account number|credit card|debit card|card number|\bcvv\b|routing number|authentication|secret|token|consent|agree to|terms and conditions|signature/i.test(

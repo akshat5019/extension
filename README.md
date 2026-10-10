@@ -4,7 +4,7 @@ A runnable Chrome Manifest V3 extension for importing documents into separate lo
 
 Core features work offline with no account or backend. React + TypeScript provides the popup and full workspace. Dexie/IndexedDB stores profiles and document metadata. Standard local extraction and label mapping work without an AI model. An opt-in Chrome on-device Prompt API provider supports ambiguous free-form documents where the browser exposes it; it is optional, experimental and not a prerequisite.
 
-Version 2.0.1 fixes document imports in **Open workspace** tabs: extension UI messages with Chrome tab metadata are now authorized by their exact extension page URL. Website content scripts remain unable to read the database. Update the existing unpacked folder, reload the extension, and refresh its workspace tab; no data reset is needed.
+Version 2.0.2 prepares full, first, middle and last names from resume imports and fills name fields from existing full-name-only profiles without retyping or reimporting. It also retains the 2.0.1 workspace database fix. Replace files in your existing unpacked folder, keep that folder path, click Reload in `chrome://extensions`, and refresh the workspace and job portal tabs; no data reset is needed.
 
 ## Build and install
 
@@ -32,6 +32,10 @@ This project has not been published to Chrome Web Store. See [publication instru
 ## Import and manage people
 
 Open **Import** in the popup, or **Open workspace** for a full-width extension tab. Choose PDF, DOCX, TXT, CSV, XLSX or a JSON export. The worker separates structured rows and validates values. PDF/DOCX parsing is local; PDF pages are read asynchronously with progress. Import results are staged in memory until confirmation. Closing the interface discards a staged import without partially writing the database.
+
+For a resume, click **Import resume** on the Fill form screen, choose the file, review the extracted names and contact details, choose **Create separate profile** if the record requires a decision, and confirm import. Then select that profile, scan the job application and fill. A resume heading followed by a single contact identity can supply the full name even when education/project names appear later. Ambiguous person headings are withheld for review. When only a full name is available, the default suggestion uses its first word as the first name, last word as the last name, and intervening words as the middle name. Review the split for your naming convention; explicitly supplied name parts, including compound names, take precedence. Single-word names have no invented last name. Conflicting alternate names are not split automatically.
+
+Importing a resume here extracts profile information; it does not attach the file to a portal's **Upload Resume**, **Import your profile from resume**, or **Upload Cover Letter** control. Attach those files on the website, then move to the personal-details step and scan again. Only fields currently visible on the page can be filled. The extension never submits an application automatically.
 
 CSV/XLSX tables need headings such as `Name`, `Email`, `Phone`, `Address`, `City`, `Company`, `Date of birth`, or `Alternate phone`. Each row is one person. XLSX numeric phone cells must be formatted as text to preserve leading zeroes. Use separate alternate columns for multiple identifiers. Formula cells use their stored text/result; macros and formulas are never executed. JSON exports can be imported through the same reviewed workflow; incoming IDs are not silently reused.
 

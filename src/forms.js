@@ -6,7 +6,7 @@ export function classifyField(text, autocomplete = '', type = '') {
   // Questions with legal/personal implications always require explicit answers.
   if (/authorized|authorised|authorization|authorisation|sponsor|visa|salary|compensation|gender|race|ethnic|disabilit|veteran|pronoun|relocat|notice period|start date|years|experience|cover letter|why |agree|consent|citizen/.test(label)) return null;
   const auto = {
-    'given-name': 'firstName', 'family-name': 'lastName', name: 'fullName', email: 'email', tel: 'phone',
+    'given-name': 'firstName', 'additional-name': 'middleName', 'family-name': 'lastName', name: 'fullName', email: 'email', tel: 'phone',
     'street-address': 'address', 'address-line1': 'address', 'address-level2': 'city',
     'address-level1': 'state', 'postal-code': 'postalCode', 'country-name': 'country', country: 'country',
     organization: 'currentCompany', 'organization-title': 'jobTitle',
