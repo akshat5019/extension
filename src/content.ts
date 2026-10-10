@@ -1,13 +1,20 @@
 import { collectFields, fieldValue, isRequired, writeField } from "./forms.js";
 import { describe, mapper, type FormField } from "./core/mapping";
 import { sensitive } from "./core/model";
+import { collectFormTree } from "./form-tree.js";
+import { getPortalAdapter } from "./site-adapters.js";
 type Input = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
+const isInput = (el: Input): el is HTMLInputElement => el.tagName === "INPUT";
+const isSelect = (el: Input): el is HTMLSelectElement =>
+  el.tagName === "SELECT";
 type Snapshot = {
   element: Input;
   members?: HTMLInputElement[];
   label: string;
   key: string | null;
   type: string;
+  root: Node;
+  documentURL: string;
 };
 if (!(globalThis as any).__personalAssistV2) {
   (globalThis as any).__personalAssistV2 = true;
@@ -17,7 +24,7 @@ if (!(globalThis as any).__personalAssistV2) {
     boundProfile = "";
   let undo = new Map<
     Input,
-    { before: string | boolean; after: string | boolean }
+    { before: string | boolean; after: string | boolean; documentURL: string }
   >();
   let edits = new Set<Input>();
   let baseline = new Map<Input, string>();
@@ -32,7 +39,7 @@ if (!(globalThis as any).__personalAssistV2) {
               .map((l) => l.textContent?.trim())
               .join(" ") || e.value,
         }))
-      : el instanceof HTMLSelectElement
+      : isSelect(el)
         ? Array.from(el.options)
             .filter((o) => !o.disabled && o.value)
             .map((o) => ({
@@ -44,11 +51,13 @@ if (!(globalThis as any).__personalAssistV2) {
       ? "Sensitive or consent field: enter manually."
       : el.type === "file"
         ? "Upload files manually."
-        : el instanceof HTMLSelectElement && el.multiple
-          ? "Multiple selection requires manual entry."
-          : s.members?.some((e) => e.disabled)
-            ? "Radio group contains unavailable options."
-            : undefined;
+        : !isSelect(el) && el.getAttribute("role") === "combobox"
+          ? "Custom dropdown: choose an option on the website."
+          : isSelect(el) && el.multiple
+            ? "Multiple selection requires manual entry."
+            : s.members?.some((e) => e.disabled)
+              ? "Radio group contains unavailable options."
+              : undefined;
     return {
       id,
       label: s.label,
@@ -70,8 +79,13 @@ if (!(globalThis as any).__personalAssistV2) {
     scanUrl = location.href;
     scanId = crypto.randomUUID();
     edits.clear();
-    const elements = collectFields(document) as Input[];
+    const tree = collectFormTree(document);
+    const elements = tree.fields as Input[];
     baseline = new Map(elements.map((el) => [el, el.value]));
+    for (const el of elements) {
+      observeEdits(el.ownerDocument);
+      observeEdits(el.getRootNode());
+    }
     const seen = new Set<Input>();
     for (const el of elements) {
       if (seen.has(el)) continue;
@@ -81,56 +95,85 @@ if (!(globalThis as any).__personalAssistV2) {
         members = elements.filter(
           (e) =>
             e.type === "radio" &&
-            e instanceof HTMLInputElement &&
+            isInput(e) &&
             e.name &&
             e.name === (el as HTMLInputElement).name &&
-            e.form === el.form,
+            e.form === el.form &&
+            e.getRootNode() === el.getRootNode(),
         ) as HTMLInputElement[];
         if (!members.length) members = [el as HTMLInputElement];
         members.forEach((e) => seen.add(e));
       }
       const id = String(scanned.size);
-      scanned.set(id, { element: el, ...d, type: el.type, members });
+      scanned.set(id, {
+        element: el,
+        ...d,
+        type: el.type,
+        members,
+        root: el.getRootNode(),
+        documentURL: el.ownerDocument.URL,
+      });
     }
     return {
       scanId,
       url: scanUrl,
       fields: [...scanned].map(([id, s]) => info(id, s)),
-      embeddedForms: document.querySelectorAll("iframe").length,
-      customControls: document.querySelectorAll(
-        '[role="combobox"],[contenteditable="true"]',
-      ).length,
+      embeddedForms: tree.accessibleFrames + tree.inaccessibleFrames,
+      accessibleFrames: tree.accessibleFrames,
+      inaccessibleFrames: tree.inaccessibleFrames,
+      shadowRoots: tree.shadowRoots,
+      truncated: tree.truncated,
+      customControls: tree.customControls,
+      integration: [
+        ...new Set([
+          getPortalAdapter(document).name,
+          ...[...new Set(elements.map((el) => el.ownerDocument))].map(
+            (doc) => getPortalAdapter(doc).name,
+          ),
+        ]),
+      ].join(", "),
     };
   }
-  function intact(s: Snapshot) {
+  function intact(s: Snapshot, active = visible()) {
+    const description = describe(s.element);
     return (
       s.element.isConnected &&
-      visible().has(s.element) &&
-      describe(s.element).label === s.label &&
-      describe(s.element).key === s.key &&
+      active.has(s.element) &&
+      s.element.getRootNode() === s.root &&
+      s.element.ownerDocument.URL === s.documentURL &&
+      description.label === s.label &&
+      description.key === s.key &&
       s.element.type === s.type
     );
   }
   function setControl(el: Input, value: string | boolean) {
-    if (typeof value === "boolean" && el instanceof HTMLInputElement) {
+    const win = el.ownerDocument.defaultView!;
+    if (typeof value === "boolean" && isInput(el)) {
       Object.getOwnPropertyDescriptor(
-        HTMLInputElement.prototype,
+        win.HTMLInputElement.prototype,
         "checked",
       )!.set!.call(el, value);
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
+      el.dispatchEvent(
+        new win.Event("input", { bubbles: true, composed: true }),
+      );
+      el.dispatchEvent(
+        new win.Event("change", { bubbles: true, composed: true }),
+      );
       return true;
     }
     if (value === "") {
-      const proto =
-        el instanceof HTMLSelectElement
-          ? HTMLSelectElement.prototype
-          : el instanceof HTMLTextAreaElement
-            ? HTMLTextAreaElement.prototype
-            : HTMLInputElement.prototype;
+      const proto = isSelect(el)
+        ? win.HTMLSelectElement.prototype
+        : el.tagName === "TEXTAREA"
+          ? win.HTMLTextAreaElement.prototype
+          : win.HTMLInputElement.prototype;
       Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value);
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-      el.dispatchEvent(new Event("change", { bubbles: true }));
+      el.dispatchEvent(
+        new win.Event("input", { bubbles: true, composed: true }),
+      );
+      el.dispatchEvent(
+        new win.Event("change", { bubbles: true, composed: true }),
+      );
       return true;
     }
     return writeField(el, String(value));
@@ -138,12 +181,18 @@ if (!(globalThis as any).__personalAssistV2) {
   function clearFilled() {
     let restored = 0,
       kept = 0;
+    const active = visible();
     for (const [el, value] of undo) {
       const current =
         typeof value.after === "boolean"
           ? (el as HTMLInputElement).checked
           : el.value;
-      if (el.isConnected && current === value.after && !edits.has(el)) {
+      if (
+        active.has(el) &&
+        el.ownerDocument.URL === value.documentURL &&
+        current === value.after &&
+        !edits.has(el)
+      ) {
         setControl(el, value.before);
         restored++;
       } else kept++;
@@ -152,15 +201,20 @@ if (!(globalThis as any).__personalAssistV2) {
     boundProfile = "";
     return { restored, kept };
   }
-  for (const type of ["input", "change"])
-    document.addEventListener(
-      type,
-      (event) => {
-        if (event.isTrusted && event.target instanceof HTMLElement)
-          edits.add(event.target as Input);
-      },
-      true,
-    );
+  const observed = new WeakSet<Node>();
+  function observeEdits(root: Node) {
+    if (observed.has(root)) return;
+    observed.add(root);
+    for (const type of ["input", "change"])
+      root.addEventListener(
+        type,
+        (event) => {
+          const target = event.composedPath()[0] as Input;
+          if (event.isTrusted && baseline.has(target)) edits.add(target);
+        },
+        true,
+      );
+  }
   // No startup form reads, uploads, database requests or automatic filling.
   chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (sender.id !== chrome.runtime.id || sender.tab) return;
@@ -182,9 +236,10 @@ if (!(globalThis as any).__personalAssistV2) {
           );
         boundProfile = message.profileId;
         const results = [];
+        const active = visible();
         for (const [id, s] of scanned) {
           const f = info(id, s);
-          if (!intact(s)) {
+          if (!intact(s, active)) {
             results.push({
               id,
               filled: false,
@@ -233,7 +288,11 @@ if (!(globalThis as any).__personalAssistV2) {
             for (const el of s.members) {
               const before = el.checked;
               setControl(el, el === chosen);
-              undo.set(el, { before, after: el.checked });
+              undo.set(el, {
+                before,
+                after: el.checked,
+                documentURL: el.ownerDocument.URL,
+              });
             }
             results.push({ id, filled: true });
           } else if (s.type === "checkbox") {
@@ -248,7 +307,11 @@ if (!(globalThis as any).__personalAssistV2) {
             const el = s.element as HTMLInputElement;
             const before = el.checked;
             setControl(el, true);
-            undo.set(el, { before, after: true });
+            undo.set(el, {
+              before,
+              after: true,
+              documentURL: el.ownerDocument.URL,
+            });
             results.push({ id, filled: true });
           } else {
             const before = s.element.value;
@@ -262,7 +325,11 @@ if (!(globalThis as any).__personalAssistV2) {
                     "Value failed portal validation; enter a valid answer.",
                 });
               } else {
-                undo.set(s.element, { before, after: s.element.value });
+                undo.set(s.element, {
+                  before,
+                  after: s.element.value,
+                  documentURL: s.element.ownerDocument.URL,
+                });
                 results.push({ id, filled: true });
               }
             } else
@@ -286,11 +353,12 @@ if (!(globalThis as any).__personalAssistV2) {
           throw new Error(
             "Select and fill this profile before capturing page edits.",
           );
+        const active = visible();
         respond({
           fields: [...scanned]
             .filter(
               ([, s]) =>
-                intact(s) &&
+                intact(s, active) &&
                 edits.has(s.element) &&
                 s.element.value !== baseline.get(s.element),
             )

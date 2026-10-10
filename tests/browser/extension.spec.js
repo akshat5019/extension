@@ -464,6 +464,140 @@ test("offers selectable names for ambiguous imports without requiring name retyp
   expect(saved.fields.lastName).toBe("Sharma");
 });
 
+test("fills ATS identifiers, adjacent labels, open shadow components and same-origin embedded applications", async () => {
+  await seed();
+  await select("Rahul Sharma");
+  await job.evaluate(async () => {
+    const section = document.createElement("div");
+    section.innerHTML =
+      '<input id="wd-first" data-automation-id="legalNameSection_firstName" placeholder="Enter"><div><span class="form-label">Last Name *</span><input id="adjacent-last"></div><div id="shadow-host"></div><iframe id="embedded" style="width:600px;height:350px"></iframe>';
+    document.querySelector("form").prepend(section);
+    const root = document
+      .querySelector("#shadow-host")
+      .attachShadow({ mode: "open" });
+    document.querySelector("#shadow-host").style.display = "contents";
+    root.innerHTML =
+      '<span id="shadow-label">Given Name</span><input id="shadow-first" aria-labelledby="shadow-label"><label>City<input id="shadow-city" required></label>';
+    window.shadowEvents = 0;
+    document
+      .querySelector("#shadow-host")
+      .addEventListener("input", () => window.shadowEvents++);
+    const frame = document.querySelector("#embedded");
+    await new Promise((resolve) => {
+      frame.onload = resolve;
+      frame.srcdoc =
+        '<form><label>Full Name<input id="frame-name"></label><label>Mobile Number<input id="frame-phone" type="tel"></label><label>Country<select id="frame-country"><option value="">Choose</option><option value="IN">India</option></select></label><label>Date of birth<input id="frame-dob" type="date"></label><fieldset><legend>Preferred contact</legend><label>Phone<input type="radio" name="contact" value="phone"></label><label>Email<input type="radio" name="contact" value="email"></label></fieldset><button>Submit</button></form>';
+    });
+  });
+  await popup
+    .getByLabel(
+      "Include date of birth and gender from this profile for this fill",
+    )
+    .check();
+  await popup.getByRole("button", { name: "Scan form", exact: true }).click();
+  await expect(popup.locator("#status")).toContainText("Workday");
+  await expect(popup.locator("#status")).toContainText(
+    "Scanned 1 accessible embedded forms",
+  );
+  await popup
+    .getByRole("button", { name: "Fill form", exact: true })
+    .last()
+    .click();
+  await expect(job.locator("#wd-first")).toHaveValue("Rahul");
+  await expect(job.locator("#adjacent-last")).toHaveValue("Sharma");
+  await expect(job.locator("#shadow-first")).toHaveValue("Rahul");
+  expect(await job.evaluate(() => window.shadowEvents)).toBeGreaterThan(0);
+  const frame = job.frameLocator("#embedded");
+  await expect(frame.locator("#frame-name")).toHaveValue("Rahul Sharma");
+  await expect(frame.locator("#frame-phone")).toHaveValue("9876543210");
+  await expect(frame.locator("#frame-country")).toHaveValue("IN");
+  await expect(frame.locator("#frame-dob")).toHaveValue("1990-02-03");
+  await expect(frame.locator('[name="contact"][value="phone"]')).toBeChecked();
+  await expect(job.locator('[name="contact"][value="phone"]')).toBeChecked();
+  await job.locator("#shadow-city").fill("Pune");
+  await popup
+    .getByRole("button", { name: "Review answers entered on page" })
+    .click();
+  await popup
+    .getByRole("button", { name: "Confirm save to selected profile" })
+    .click();
+  await expect(popup.locator("#status")).toContainText("saved to Rahul");
+  await frame.locator("#frame-phone").fill("9999999999");
+  await popup.getByRole("button", { name: "Undo autofill" }).click();
+  await expect(frame.locator("#frame-phone")).toHaveValue("9999999999");
+  await expect(frame.locator("#frame-name")).toHaveValue("");
+  await expect(frame.locator("#frame-country")).toHaveValue("");
+  await expect(
+    frame.locator('[name="contact"][value="phone"]'),
+  ).not.toBeChecked();
+  await expect(job.locator("#shadow-first")).toHaveValue("");
+  await expect(job.locator("#shadow-city")).toHaveValue("Pune");
+  expect(await job.evaluate(() => window.submitted)).toBe(false);
+});
+
+test("reports protected frames and custom controls, and invalidates changed embedded steps", async () => {
+  await seed();
+  await select("Rahul Sharma");
+  await job.evaluate(async () => {
+    const section = document.createElement("div");
+    section.innerHTML =
+      '<iframe id="same-origin" style="height:120px"></iframe><iframe id="protected" sandbox="allow-scripts" style="height:120px"></iframe><label>Country<input role="combobox" id="custom-country"></label><div id="hidden-host" style="display:none"></div><label>Reference full name<input id="referee" data-field="fullName"></label>';
+    document.querySelector("form").prepend(section);
+    document
+      .querySelector("#hidden-host")
+      .attachShadow({ mode: "open" }).innerHTML =
+      '<label>First name<input id="hidden-first"></label>';
+    await Promise.all(
+      ["same-origin", "protected"].map(
+        (id) =>
+          new Promise((resolve) => {
+            const frame = document.getElementById(id);
+            frame.onload = resolve;
+            frame.srcdoc =
+              '<label>First Name<input id="embedded-first" required></label>';
+          }),
+      ),
+    );
+  });
+  await popup.getByRole("button", { name: "Scan form", exact: true }).click();
+  await expect(popup.locator("#status")).toContainText(
+    "1 protected or cross-origin frames",
+  );
+  await expect(
+    popup.getByText("Custom dropdown: choose an option on the website."),
+  ).toBeVisible();
+  const sameOrigin = job
+    .frames()
+    .find((frame) => frame.parentFrame() && frame.url() === "about:srcdoc");
+  await sameOrigin.evaluate(() => {
+    location.hash = "next-step";
+  });
+  await popup
+    .getByRole("button", { name: "Fill form", exact: true })
+    .last()
+    .click();
+  await expect(
+    job.frameLocator("#same-origin").locator("#embedded-first"),
+  ).toHaveValue("");
+  await expect(
+    job.frameLocator("#protected").locator("#embedded-first"),
+  ).toHaveValue("");
+  await expect(job.locator("#custom-country")).toHaveValue("");
+  await expect(job.locator("#referee")).toHaveValue("");
+  await expect(job.locator("#hidden-first")).toHaveValue("");
+  await expect(
+    popup.getByText("Field changed since scanning.", { exact: true }),
+  ).toBeVisible();
+  await popup.getByRole("button", { name: "Scan form", exact: true }).click();
+  await popup
+    .getByRole("button", { name: "Fill form", exact: true })
+    .last()
+    .click();
+  await expect(
+    job.frameLocator("#same-origin").locator("#embedded-first"),
+  ).toHaveValue("Rahul");
+});
+
 test("imports multiple people, requires selection, fills only one person, confirms learning and supports undo", async () => {
   await seed();
   await select("Rahul Sharma");

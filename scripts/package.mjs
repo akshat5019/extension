@@ -15,6 +15,12 @@ async function collect(dir) {
 }
 await collect("dist");
 files["README.md"] = new Uint8Array(await readFile("README.md"));
+for (const path of [
+  "docs/COMPATIBILITY.md",
+  "docs/ARCHITECTURE.md",
+  "docs/TESTING.md",
+])
+  files[path] = new Uint8Array(await readFile(path));
 const bytes = zipSync(files, { level: 6 });
 const checked = unzipSync(bytes);
 const manifest = JSON.parse(strFromU8(checked["manifest.json"]));

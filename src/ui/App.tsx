@@ -175,6 +175,11 @@ function App() {
       url: string;
       fields: FormField[];
       embeddedForms: number;
+      accessibleFrames: number;
+      inaccessibleFrames: number;
+      shadowRoots: number;
+      integration: string;
+      truncated: boolean;
       customControls: number;
     }>(),
     [fillReport, setFillReport] = useState<any[]>([]),
@@ -268,8 +273,8 @@ function App() {
     setFillReport([]);
     setNotice(
       result.fields.length
-        ? `Detected ${result.fields.length} fields. Review before filling.${result.embeddedForms ? " Embedded frames need separate access." : ""}${result.customControls ? " Custom controls may need manual entry." : ""}`
-        : "No supported visible fields found.",
+        ? `Detected ${result.fields.length} fields. ${result.integration || "Standard website forms"}. Review before filling.${result.accessibleFrames ? ` Scanned ${result.accessibleFrames} accessible embedded forms.` : ""}${result.inaccessibleFrames ? ` ${result.inaccessibleFrames} protected or cross-origin frames need manual entry.` : ""}${result.customControls ? " Custom dropdowns may need manual selection." : ""}${result.truncated ? " Scan limit reached; some controls were skipped." : ""}`
+        : `No supported visible fields found. Open the personal-details step and scan again.${result.inaccessibleFrames ? " Embedded forms are protected or on another origin." : ""}`,
     );
   }
   async function fill() {
