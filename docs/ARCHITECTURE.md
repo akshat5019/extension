@@ -11,6 +11,8 @@ The extension has four trust-separated components:
 
 `pdf-layout.ts` reconstructs horizontal text lines from page coordinates, rejoins adjacent glyph fragments and separates wide columns. It sends temporary prominent heading hints to the extraction worker. `name-detection.ts` excludes common job/section titles and uses a heading or nearby contact identity to suggest a resume name. Hints only apply to names present in the current record, and conflicting identifiers suppress header inference. Ambiguous candidate names are presented as bounded selectable suggestions in the reviewed import UI; they never trigger a database write or merge. No filename/email-derived names are generated. Geometric/font heuristics are not proof of identity, and unusual or rotated layouts still require source review.
 
+`resume-contact.ts` reconstructs pipe/bullet/tab contact rows and separate-line labels without losing explicit record/page boundaries. Personal location parsing uses local browser ICU country names/aliases. Unlabelled inference stays within the first 12 contact-header lines before a resume section and requires an unambiguous contact identity. Labelled table locations can be parsed independently. Generic location labels outside a free-form contact header are withheld, and any conflict blocks derived location additions as a group. Missing countries are never inferred from phone numbers or employers. Extraction feeds the same canonical profile keys and reviewed import transaction; no additional storage schema, network service or website access is introduced.
+
 ## Database and schema
 
 Database `personal-assist-v2`, IndexedDB version 1:

@@ -1,4 +1,5 @@
 import { sensitive } from "./model";
+import { resumeHeader } from "./resume-contact";
 
 // These heuristics are suggestions for import review, not proof of identity.
 export function isPossiblePersonName(text: string) {
@@ -39,11 +40,11 @@ export function resumeNameSuggestion(
   ];
   if (hints.length === 1) return hints[0];
   if (hints.length > 1) return undefined;
-  const header = lines
+  const header = resumeHeader(lines)
     .map((line) => line.trim())
     .filter(Boolean)
     .filter((line) => !/^(resume|cv|curriculum vitae)$/i.test(line))
-    .slice(0, 8);
+    .slice(0, 12);
   const contactIndex = header.findIndex(
     (line) =>
       emails.some((email) => line.includes(email)) ||
@@ -53,5 +54,9 @@ export function resumeNameSuggestion(
   const beforeContact = header
     .slice(0, contactIndex)
     .filter((line) => names.includes(line));
-  return beforeContact.length === 1 ? beforeContact[0] : undefined;
+  if (beforeContact.length === 1) return beforeContact[0];
+  const headerNames = header.filter((line) => names.includes(line));
+  return beforeContact.length === 0 && headerNames.length === 1
+    ? headerNames[0]
+    : undefined;
 }

@@ -7,6 +7,12 @@ import {
   type Fields,
 } from "./model";
 import { isPossiblePersonName, resumeNameSuggestion } from "./name-detection";
+import {
+  addResumeLocation,
+  personalLocationLabel,
+  resumeHeader,
+  resumeLines,
+} from "./resume-contact";
 export interface Candidate {
   fields: Fields;
   warnings: string[];
@@ -24,10 +30,16 @@ const aliases: Record<string, string> = {
   "candidate name": "fullName",
   "first name": "firstName",
   "given name": "firstName",
+  "given names": "firstName",
   "middle name": "middleName",
   "last name": "lastName",
   surname: "lastName",
+  "family name": "lastName",
   email: "email",
+  mail: "email",
+  "mail address": "email",
+  "email id": "email",
+  "e-mail id": "email",
   "email address": "email",
   "e mail": "email",
   "e-mail": "email",
@@ -46,10 +58,13 @@ const aliases: Record<string, string> = {
   "residential address": "address",
   "permanent address": "permanentAddress",
   city: "city",
+  "current city": "city",
+  "home city": "city",
   town: "city",
   state: "state",
   province: "state",
   country: "country",
+  "country of residence": "country",
   zip: "postalCode",
   "zip code": "postalCode",
   "postal code": "postalCode",
@@ -144,9 +159,10 @@ export function rowsToRecords(rows: unknown[][]): Extraction {
       warnings.push(`Row ${i + 1} has no person identifier and was skipped.`);
       continue;
     }
+    const location = addResumeLocation(fields);
     candidates.push({
-      fields: completeNameFields(cleanFields(fields)),
-      warnings: issues,
+      fields: completeNameFields(cleanFields(location.fields)),
+      warnings: [...issues, ...location.warnings],
       record: i,
     });
   }
@@ -174,10 +190,16 @@ export function extractPeople(
   const first = text.split(/\r?\n/).find((x) => x.trim()) || "";
   if (
     (first.includes("\t") || first.includes(",")) &&
-    /name|email|phone/i.test(first)
+    first
+      .split(first.includes("\t") ? "\t" : ",")
+      .some((cell) =>
+        ["fullName", "firstName", "email", "phone"].includes(
+          mapColumn(cell.replace(/^"|"$/g, "")) || "",
+        ),
+      )
   )
     return extractCSV(text);
-  const lines = text.split(/\r?\n/);
+  const lines = resumeLines(text);
   const candidates: Candidate[] = [];
   const warnings: string[] = [];
   let block: string[] = [];
@@ -191,10 +213,20 @@ export function extractPeople(
       issues: string[] = [];
     let nameSuggestions: string[] | undefined;
     const rest: string[] = [];
+    const header = resumeHeader(block);
     for (const line of block) {
       const pair = line.match(/^\s*([^:]{1,100})\s*:\s*(.+)$/);
-      if (pair) {
+      if (pair && !/^https?$/i.test(pair[1])) {
         const key = mapColumn(pair[1]);
+        if (
+          personalLocationLabel.test(pair[1].trim()) &&
+          !header.includes(line)
+        ) {
+          issues.push(
+            "A location outside the contact header was not assigned to this person. Review the source document.",
+          );
+          continue;
+        }
         if (key) {
           if (fields[key] && String(fields[key]) !== pair[2].trim())
             issues.push(
@@ -229,6 +261,17 @@ export function extractPeople(
       if (!fields.email && emails[0]) fields.email = emails[0];
       if (!fields.phone && phones[0]) fields.phone = phones[0];
     }
+    // Unlabelled locations are limited to a single contact identity's header.
+    const location = addResumeLocation(
+      fields,
+      emails.length <= 1 &&
+        phones.length <= 1 &&
+        (emails.length || phones.length)
+        ? header
+        : [],
+    );
+    Object.assign(fields, location.fields);
+    issues.push(...location.warnings);
     if (!fields.fullName && !fields.firstName) {
       const names = rest.filter(isPossiblePersonName);
       const suggested = resumeNameSuggestion(

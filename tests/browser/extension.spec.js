@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { createServer } from "node:http";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import ExcelJS from "exceljs";
+import { zipSync, strToU8 } from "fflate";
 let server, context, background, popup, job, temporary, url;
 const fixture = `<!doctype html><title>Registration</title><h1>Register</h1><form>
 <label>Full Name<input id="name"></label><label>Mobile Number<input id="phone" type="tel"></label><label>Email Address<input id="email" type="email"></label><label>Home Address<textarea id="address" required></textarea></label><label>Country<select id="country"><option value="">Choose</option><option value="IN">India</option><option value="US">United States</option></select></label>
@@ -237,15 +238,13 @@ async function seed() {
   await confirmImport();
 }
 
-test("imports a resume and fills full, first, middle and last names without manual answers", async () => {
+test("imports an inline PDF resume and fills names, email, city and country without manual answers", async () => {
   const pdf = await PDFDocument.create();
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const page = pdf.addPage();
   [
-    "Akshat Kumar Sharma",
-    "Software Engineer",
-    "akshat@example.com",
-    "9876543210",
+    "Akshat Kumar Sharma | Software Engineer",
+    "akshat@example.com | 9876543210 | Pune, Maharashtra, India",
     "Education",
     "National Technical Institute",
     "Projects",
@@ -269,13 +268,21 @@ test("imports a resume and fills full, first, middle and last names without manu
   await expect(popup.getByLabel("Last name", { exact: true })).toHaveValue(
     "Sharma",
   );
+  await expect(popup.getByLabel("City", { exact: true })).toHaveValue("Pune");
+  await expect(popup.getByLabel("Country", { exact: true })).toHaveValue(
+    "India",
+  );
+  await expect(popup.getByLabel("Resume autofill summary")).toContainText(
+    "Full name, First name, Last name, Email, City, Country",
+  );
   await popup.getByLabel("Record decision").selectOption("create");
   await confirmImport();
+  await popup.reload();
   await select("Akshat Kumar Sharma");
   await job.evaluate(() => {
     const section = document.createElement("div");
     section.innerHTML =
-      '<label>Legal First Name *<input id="given" required></label><label>Middle Name<input id="middle" autocomplete="additional-name"></label><label>Last Name *<input id="family" required></label><label>Upload Resume<input id="resume-file" type="file" required></label>';
+      '<label>Legal First Name *<input id="given" required></label><label>Middle Name<input id="middle" autocomplete="additional-name"></label><label>Last Name *<input id="family" required></label><label>City<input id="city" required></label><label>Upload Resume<input id="resume-file" type="file" required></label>';
     document.querySelector("form").prepend(section);
   });
   await popup.getByRole("button", { name: "Scan form", exact: true }).click();
@@ -291,11 +298,78 @@ test("imports a resume and fills full, first, middle and last names without manu
   await expect(job.locator("#family")).toHaveValue("Sharma");
   await expect(job.locator("#email")).toHaveValue("akshat@example.com");
   await expect(job.locator("#phone")).toHaveValue("9876543210");
+  await expect(job.locator("#city")).toHaveValue("Pune");
+  await expect(job.locator("#country")).toHaveValue("IN");
   await expect(job.locator("#resume-file")).toHaveValue("");
   expect(await job.evaluate(() => window.submitted)).toBe(false);
   await popup.getByRole("button", { name: "Undo autofill" }).click();
   await expect(job.locator("#given")).toHaveValue("");
   await expect(job.locator("#family")).toHaveValue("");
+  await expect(job.locator("#city")).toHaveValue("");
+});
+
+test("reads labelled DOCX resume contacts locally and fills the saved profile after reopening", async () => {
+  const paragraphs = [
+    "Full Name",
+    "Jane Doe",
+    "Mail",
+    "jane@example.com",
+    "Current Location",
+    "London, UK",
+    "Experience",
+    "Acme Company, Paris, France",
+  ];
+  const docx = zipSync({
+    "[Content_Types].xml": strToU8(
+      '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+    ),
+    "_rels/.rels": strToU8(
+      '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+    ),
+    "word/document.xml": strToU8(
+      `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${paragraphs.map((text) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`).join("")}</w:body></w:document>`,
+    ),
+  });
+  await upload("jane-resume.docx", docx);
+  for (const [label, value] of [
+    ["Full name", "Jane Doe"],
+    ["First name", "Jane"],
+    ["Last name", "Doe"],
+    ["Email", "jane@example.com"],
+    ["City", "London"],
+    ["Country", "United Kingdom"],
+  ]) {
+    await expect(popup.getByLabel(label, { exact: true })).toHaveValue(value);
+  }
+  await popup.getByLabel("Record decision").selectOption("create");
+  await confirmImport();
+  await popup.reload();
+  await select("Jane Doe");
+  await job.evaluate(() => {
+    document
+      .querySelector("form")
+      .insertAdjacentHTML(
+        "afterbegin",
+        '<label>First name<input id="given"></label><label>Last name<input id="family"></label><label>City<input id="city"></label>',
+      );
+    document.querySelector("#country").add(new Option("United Kingdom", "GB"));
+  });
+  await popup.getByRole("button", { name: "Scan form", exact: true }).click();
+  await popup
+    .getByRole("button", { name: "Fill form", exact: true })
+    .last()
+    .click();
+  for (const [id, value] of [
+    ["name", "Jane Doe"],
+    ["given", "Jane"],
+    ["family", "Doe"],
+    ["email", "jane@example.com"],
+    ["city", "London"],
+    ["country", "GB"],
+  ]) {
+    await expect(job.locator(`#${id}`)).toHaveValue(value);
+  }
+  expect(await job.evaluate(() => window.submitted)).toBe(false);
 });
 
 test("fills older full-name-only profiles, preserves existing names and uses native name events", async () => {

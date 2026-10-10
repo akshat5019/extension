@@ -582,8 +582,8 @@ function App() {
             Forms are submitted manually.
           </p>
           <p>
-            Import your resume once to prepare full, first and last names.
-            Select its saved profile to fill supported name and contact fields.
+            Import your resume once to prepare full, first and last names,
+            email, city and country. Select its saved profile to fill the form.
           </p>
           <button disabled={busy} onClick={() => setView("import")}>
             Import resume
@@ -955,11 +955,11 @@ function App() {
               : "Standard local extraction is active."}
           </p>
           <p>
-            Resume names are prepared as full, first, middle and last names for
-            autofill. Review the suggested split below; explicit name parts in
-            your document are preserved. Name order varies between people.
-            Importing here reads your resume; attach the file separately when
-            the job portal asks for a resume upload.
+            Resume names, email and personal locations are prepared for
+            autofill. Review the suggested name split, city and country below;
+            explicit fields in your document are preserved. Name order varies
+            between people. Importing here reads your resume; attach the file
+            separately when the job portal asks for a resume upload.
           </p>
           <label className="upload">
             Choose document
@@ -1010,6 +1010,30 @@ function App() {
                   Next unresolved
                 </button>
               </div>
+              <p aria-label="Resume autofill summary">
+                Ready for autofill:{" "}
+                {[
+                  "fullName",
+                  "firstName",
+                  "lastName",
+                  "email",
+                  "city",
+                  "country",
+                ]
+                  .filter((key) => display(row.fields[key]))
+                  .map((key) => LABELS[key])
+                  .join(", ") || "No core details found"}
+                .
+                {[
+                  "fullName",
+                  "firstName",
+                  "lastName",
+                  "email",
+                  "city",
+                  "country",
+                ].some((key) => !display(row.fields[key])) &&
+                  " Details absent or uncertain in the document stay blank for review."}
+              </p>
               {row.warnings.map((w, i) => (
                 <p className="warning" key={i}>
                   {w}

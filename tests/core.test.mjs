@@ -139,6 +139,79 @@ test("fills name fields for existing full-name-only profiles without database ch
     "de la Cruz",
   );
 });
+test("extracts resume names, email, city and country from common inline and labelled layouts", () => {
+  const layouts = [
+    "Akshat Kumar Sharma | Data Analyst\nakshat@example.com • +91 9876543210 • Pune, Maharashtra, India\nSkills\nSQL Excel",
+    "Akshat Kumar Sharma, akshat@example.com, Pune, Maharashtra, India\nData Analyst\nEducation\nNational Institute, London, UK",
+    "Full Name\nAkshat Kumar Sharma\nMail\nakshat@example.com\nCurrent Location\nPune, Maharashtra, India\nSkills\nSQL Excel",
+    "Full Name\n\nAkshat Kumar Sharma\n\nMail\n\nakshat@example.com\n\nCurrent Location\n\nPune, Maharashtra, India\n\nSkills\nSQL Excel",
+    "Name: Akshat Kumar Sharma Email: akshat@example.com Location: Pune, Maharashtra, India\nSkills\nSQL Excel",
+    "akshat@example.com\nAkshat Kumar Sharma\nPune, Maharashtra, India\nData Analyst\nSkills\nSQL Excel",
+  ];
+  for (const text of layouts) {
+    const fields = extractPeople(text).candidates[0].fields;
+    assert.equal(fields.fullName, "Akshat Kumar Sharma", text);
+    assert.equal(fields.firstName, "Akshat", text);
+    assert.equal(fields.middleName, "Kumar", text);
+    assert.equal(fields.lastName, "Sharma", text);
+    assert.equal(fields.email, "akshat@example.com", text);
+    assert.equal(fields.city, "Pune", text);
+    assert.equal(fields.state, "Maharashtra", text);
+    assert.equal(fields.country, "India", text);
+  }
+  const international = extractPeople(
+    "Jane O’Neill | Engineer\njane@example.com | London, UK\nExperience\nAcme Company, Paris, France",
+  ).candidates[0].fields;
+  assert.equal(international.firstName, "Jane");
+  assert.equal(international.lastName, "O’Neill");
+  assert.equal(international.city, "London");
+  assert.equal(international.country, "United Kingdom");
+  const table = extractCSV(
+    'First name,Family name,Mail,Location\nPriya,Sharma,priya@example.com,"Seattle, USA"',
+  ).candidates[0].fields;
+  assert.equal(table.fullName, "Priya Sharma");
+  assert.equal(table.city, "Seattle");
+  assert.equal(table.country, "United States");
+});
+test("withholds uncertain home locations and never guesses a country from contact details", () => {
+  for (const text of [
+    "Akshat Sharma\nData Analyst\nakshat@example.com\n+91 9876543210\nExperience\nLondon, UK\nEducation\nParis, France",
+    "Akshat Sharma\nData Analyst\nakshat@example.com\nExperience\nLocation: London, UK\nEducation\nParis, France",
+    "Akshat Sharma\nData Analyst\nakshat@example.com\nWork History\nLocation: London, UK\nEducation\nParis, France",
+    "Akshat Sharma\nData Analyst\nakshat@example.com\nPune, India\nLondon, UK\nSkills\nSQL Excel",
+    "Name: Akshat Sharma\nData Analyst\nakshat@example.com\npriya@example.com\nPune, India\nSkills\nSQL Excel",
+    "Akshat Sharma\nData Analyst\nakshat@example.com\nRemote, India\nSkills\nSQL Excel",
+  ]) {
+    const candidate = extractPeople(text).candidates[0];
+    assert.equal(candidate.fields.city, undefined, text);
+    assert.equal(candidate.fields.country, undefined, text);
+  }
+  const explicit = extractPeople(
+    "Name: Jane Doe\nMail: jane@example.com\nCity: Pune\nLocation: London, UK",
+  ).candidates[0];
+  assert.equal(explicit.fields.city, "Pune");
+  assert.equal(explicit.fields.country, undefined);
+  assert.match(explicit.warnings.join(" "), /Conflicting city/);
+  const missing = extractPeople(
+    "Name: Jane Doe\nMail: jane@example.com\nLocation: Pune, Maharashtra",
+  ).candidates[0].fields;
+  assert.equal(missing.city, "Pune");
+  assert.equal(missing.state, "Maharashtra");
+  assert.equal(missing.country, undefined);
+});
+test("contact normalization preserves explicit person boundaries and page-scoped names", () => {
+  for (const separator of ["---", "\f", "==="]) {
+    const result = extractPeople(
+      `Name\nRahul Sharma\nMail\nrahul@example.com\nLocation\nPune, India\n${separator}\nName\nPriya Gupta\nMail\npriya@example.com\nLocation\nLondon, UK`,
+    );
+    assert.equal(result.candidates.length, 2);
+    assert.equal(result.candidates[0].fields.fullName, "Rahul Sharma");
+    assert.equal(result.candidates[0].fields.city, "Pune");
+    assert.equal(result.candidates[1].fields.fullName, "Priya Gupta");
+    assert.equal(result.candidates[1].fields.city, "London");
+    assert.equal(result.candidates[1].fields.email, "priya@example.com");
+  }
+});
 test("recognizes analyst resumes and single-word headings without mistaking section titles for names", () => {
   for (const name of ["AKSHAT", "AKSHAT SHARMA"]) {
     const candidate = extractPeople(
