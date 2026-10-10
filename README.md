@@ -4,6 +4,8 @@ A runnable Chrome Manifest V3 extension for importing documents into separate lo
 
 Core features work offline with no account or backend. React + TypeScript provides the popup and full workspace. Dexie/IndexedDB stores profiles and document metadata. Standard local extraction and label mapping work without an AI model. An opt-in Chrome on-device Prompt API provider supports ambiguous free-form documents where the browser exposes it; it is optional, experimental and not a prerequisite.
 
+Version 2.0.1 fixes document imports in **Open workspace** tabs: extension UI messages with Chrome tab metadata are now authorized by their exact extension page URL. Website content scripts remain unable to read the database. Update the existing unpacked folder, reload the extension, and refresh its workspace tab; no data reset is needed.
+
 ## Build and install
 
 Requires Node.js 22+ and Chrome/Chromium 120+ for the standard workflow. Optional on-device AI needs a newer compatible Chrome build, supported hardware and availability of its Prompt API/model.

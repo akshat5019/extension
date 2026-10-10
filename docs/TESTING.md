@@ -3,7 +3,7 @@
 Automated tests exercise bundled code with actual Chromium DOM/IndexedDB and adapted extension APIs. Managed cloud Chromium prevents native installation; these checks need your unmanaged browser.
 
 1. Build/load dist, or extract the compiled ZIP and Load unpacked its manifest folder. Inspect the extension Errors page and background service-worker console. Refresh old portal tabs when upgrading.
-2. Import example-people.csv, select each person in turn, and fill a standard registration/application. Verify no existing values are overwritten and no submit is clicked. Undo before switching people.
+2. Import a PDF from both the popup and **Open workspace** tab; confirm review and saving work in both. Import example-people.csv, select each person in turn, and fill a standard registration/application. Verify no existing values are overwritten and no submit is clicked. Undo before switching people.
 3. Upload a text-based multi-person PDF and a DOCX. Verify person boundaries and incomplete-page warnings. Try a scanned PDF and check the no-text error. Import XLSX phones formatted as text.
 4. Import changed/new people, review duplicates/conflicts, choose create/update/skip and confirm. Try the identical file again; verify there are no repeat writes. Try two open workspace windows editing the same profile; the stale revision must be rejected.
 5. Enter missing information, verify it is not stored before confirmation, then save to the correct selected person. Select another person and verify their fields remain unchanged. Keep both conflicting values and verify ambiguous values are withheld from autofill.

@@ -9,6 +9,7 @@ await build({
     extraction: "src/core/extraction.ts",
     mapping: "src/core/mapping.ts",
     ai: "src/core/ai.ts",
+    access: "src/core/access.ts",
   },
   outdir: ".test-core",
   bundle: true,
@@ -216,4 +217,35 @@ test("free-form sensitive identifiers cannot be repurposed as phone numbers", ()
   assert.equal(result.candidates[0].fields.phone, undefined);
   assert.equal(result.candidates[0].fields.fullName, "Rahul Sharma");
   assert.ok(result.candidates[0].warnings.length);
+});
+
+test("database access accepts extension workspace tabs and rejects webpages, other extensions and subframes", async () => {
+  const { isTrustedUI } = await import("../.test-core/access.js");
+  const root = "chrome-extension://our-extension/";
+  const own = {
+    id: "our-extension",
+    url: root + "manager.html",
+    tab: { id: 2 },
+    frameId: 0,
+  };
+  assert.equal(isTrustedUI(own, "our-extension", root), true);
+  assert.equal(
+    isTrustedUI(
+      { ...own, url: root + "popup.html", tab: undefined },
+      "our-extension",
+      root,
+    ),
+    true,
+  );
+  for (const sender of [
+    { ...own, url: "https://example.com/form" },
+    { ...own, url: "https://example.com/form", tab: undefined },
+    { ...own, url: "chrome-extension://another-extension/manager.html" },
+    { ...own, id: "another-extension" },
+    { ...own, url: root + "background.js" },
+    { ...own, frameId: 1 },
+    { ...own, url: "not-a-url" },
+    { ...own, url: undefined },
+  ])
+    assert.equal(isTrustedUI(sender, "our-extension", root), false);
 });

@@ -23,7 +23,11 @@ async function setupContext() {
     const sender = {
       id: "test-extension",
       url: page.url(),
-      ...(page === job ? { tab: { id: 1 }, frameId: 0 } : {}),
+      ...(page === job
+        ? { tab: { id: 1 }, frameId: 0 }
+        : new URL(page.url()).pathname === "/manager.html"
+          ? { tab: { id: 2 }, frameId: 0 }
+          : {}),
     };
     return background.evaluate(
       ({ message, sender }) =>
@@ -710,4 +714,31 @@ test("retains IndexedDB profiles across a full Chromium shutdown and restart", a
     .last()
     .click();
   await expect(job.locator("#phone")).toHaveValue("9876543210");
+});
+
+test("imports and saves PDF profiles from the workspace tab with Chrome tab sender metadata", async () => {
+  await popup.goto(`${url}/manager.html`);
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const page = pdf.addPage();
+  ["Name: Workspace Person", "Email: workspace@example.com"].forEach(
+    (line, i) =>
+      page.drawText(line, { x: 40, y: 740 - i * 24, size: 12, font }),
+  );
+  await upload("workspace-person.pdf", await pdf.save());
+  await confirmImport();
+  expect(
+    await popup.evaluate(
+      async () =>
+        (
+          await chrome.runtime.sendMessage({
+            type: "DB_SEARCH",
+            query: "workspace@example.com",
+          })
+        ).result.items[0].fields.fullName,
+    ),
+  ).toBe("Workspace Person");
+  await popup.reload();
+  await popup.getByRole("button", { name: "People", exact: true }).click();
+  await expect(popup.locator(".person")).toContainText(["Workspace Person"]);
 });

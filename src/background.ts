@@ -1,10 +1,7 @@
+import { isTrustedUI } from "./core/access";
 import { LocalRepository, type ProfileRepository } from "./core/repository";
 import { cleanFields, type Fields } from "./core/model";
 const repository: ProfileRepository = new LocalRepository();
-const trusted = (sender: chrome.runtime.MessageSender) =>
-  sender.id === chrome.runtime.id &&
-  !sender.tab &&
-  !!sender.url?.startsWith(chrome.runtime.getURL(""));
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
 });
@@ -32,7 +29,8 @@ async function migrate() {
   await migration;
 }
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
-  if (!trusted(sender)) return; // Content scripts can never query the database.
+  if (!isTrustedUI(sender, chrome.runtime.id, chrome.runtime.getURL("")))
+    return; // Content scripts can never query the database.
   if (
     !message ||
     typeof message.type !== "string" ||
