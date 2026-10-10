@@ -6,10 +6,12 @@ import {
   sensitive,
   type Fields,
 } from "./model";
+import { isPossiblePersonName, resumeNameSuggestion } from "./name-detection";
 export interface Candidate {
   fields: Fields;
   warnings: string[];
   record: number;
+  nameSuggestions?: string[];
 }
 export interface Extraction {
   candidates: Candidate[];
@@ -160,7 +162,10 @@ export function extractCSV(text: string) {
     throw new Error(`CSV could not be read: ${result.errors[0].message}`);
   return rowsToRecords(result.data);
 }
-export function extractPeople(text: string): Extraction {
+export function extractPeople(
+  text: string,
+  nameHints: string[][] = [],
+): Extraction {
   if (!text.trim())
     throw new Error(
       "No readable text. Scanned documents need OCR; use a text-based document or enter profiles manually.",
@@ -176,6 +181,7 @@ export function extractPeople(text: string): Extraction {
   const candidates: Candidate[] = [];
   const warnings: string[] = [];
   let block: string[] = [];
+  let pageIndex = 0;
   const finish = () => {
     if (!block.some((x) => x.trim())) {
       block = [];
@@ -183,6 +189,7 @@ export function extractPeople(text: string): Extraction {
     }
     const fields: Fields = {},
       issues: string[] = [];
+    let nameSuggestions: string[] | undefined;
     const rest: string[] = [];
     for (const line of block) {
       const pair = line.match(/^\s*([^:]{1,100})\s*:\s*(.+)$/);
@@ -223,39 +230,25 @@ export function extractPeople(text: string): Extraction {
       if (!fields.phone && phones[0]) fields.phone = phones[0];
     }
     if (!fields.fullName && !fields.firstName) {
-      const names = rest.filter(
-        (x) =>
-          /^[\p{L}][\p{L} .'-]{2,60}$/u.test(x) &&
-          x.split(/\s+/).length >= 2 &&
-          x.split(/\s+/).length <= 5 &&
-          !/resume|curriculum|engineer|developer|manager|contact|education|experience|address|company|skills|university/i.test(
-            x,
-          ),
+      const names = rest.filter(isPossiblePersonName);
+      const suggested = resumeNameSuggestion(
+        block,
+        names,
+        emails,
+        phones,
+        nameHints[pageIndex] || [],
       );
-      const header = block
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .slice(0, 5);
-      const contactIndex = header.findIndex(
-        (line) =>
-          (emails[0] && line.includes(emails[0])) ||
-          (phones[0] && line.includes(phones[0])),
-      );
-      const resumeHeader =
-        names.includes(header[0]) &&
-        contactIndex > 0 &&
-        emails.length <= 1 &&
-        phones.length <= 1 &&
-        header.slice(1, contactIndex).every((line) => !names.includes(line)) &&
-        /\b(resume|curriculum|education|experience|skills|engineer|developer)\b/i.test(
-          safeText,
-        );
-      if (names.length === 1 || resumeHeader)
-        fields.fullName = resumeHeader ? header[0] : names[0];
-      else if (names.length > 1)
+      if (
+        suggested ||
+        (names.length === 1 && names[0].split(/\s+/).length >= 2)
+      )
+        fields.fullName = suggested || names[0];
+      else if (names.length > 1) {
+        nameSuggestions = [...new Set(names)].slice(0, 8);
         issues.push(
-          "Several possible names. Assign a name manually; no names were pooled.",
+          "Several possible names. Choose your name from the suggestions below; no names were combined.",
         );
+      }
     }
     if (rest.length)
       issues.push(
@@ -270,6 +263,7 @@ export function extractPeople(text: string): Extraction {
         fields: completeNameFields(cleanFields(fields)),
         warnings: issues,
         record: candidates.length + 1,
+        ...(nameSuggestions ? { nameSuggestions } : {}),
       });
     else
       warnings.push(
@@ -290,6 +284,7 @@ export function extractPeople(text: string): Extraction {
       line === "\f"
     ) {
       finish();
+      if (line === "\f") pageIndex++;
       continue;
     }
     block.push(line);

@@ -51,7 +51,10 @@ self.onmessage = async ({ data }) => {
     } else if (ext === "csv")
       result = extractCSV(new TextDecoder().decode(bytes));
     else if (ext === "txt" || ext === "pdf" || ext === "docx")
-      result = extractPeople(data.text ?? new TextDecoder().decode(bytes));
+      result = extractPeople(
+        data.text ?? new TextDecoder().decode(bytes),
+        data.nameHints || [],
+      );
     else
       throw new Error(
         "Supported formats: PDF, DOCX, TXT, CSV, XLSX and JSON. Scanned documents need OCR, which is not bundled in this version.",

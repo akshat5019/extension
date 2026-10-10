@@ -10,6 +10,7 @@ await build({
     mapping: "src/core/mapping.ts",
     ai: "src/core/ai.ts",
     access: "src/core/access.ts",
+    pdfLayout: "src/core/pdf-layout.ts",
   },
   outdir: ".test-core",
   bundle: true,
@@ -22,6 +23,7 @@ const { extractCSV, extractPeople } =
 const { combine, completeNameFields } = await import("../.test-core/model.js");
 const { mapper } = await import("../.test-core/mapping.js");
 const { validateModelRecords } = await import("../.test-core/ai.js");
+const { readPdfPage } = await import("../.test-core/pdfLayout.js");
 let repository;
 test.beforeEach(() => {
   repository = new LocalRepository(`test-${crypto.randomUUID()}`);
@@ -136,6 +138,89 @@ test("fills name fields for existing full-name-only profiles without database ch
     ),
     "de la Cruz",
   );
+});
+test("recognizes analyst resumes and single-word headings without mistaking section titles for names", () => {
+  for (const name of ["AKSHAT", "AKSHAT SHARMA"]) {
+    const candidate = extractPeople(
+      `Resume\n${name}\nData Analyst\nPower BI Analyst\nPortfolio\nLinkedIn\nGitHub\nakshat@example.com\n+91 9876543210\nProfessional Summary\nEducation\nTechnical Skills\nExcel SQL\nProjects\nSales Dashboard`,
+    ).candidates[0];
+    assert.equal(candidate.fields.fullName, name);
+    assert.equal(candidate.fields.firstName, "AKSHAT");
+    assert.equal(
+      candidate.fields.lastName,
+      name.includes(" ") ? "SHARMA" : undefined,
+    );
+  }
+  const unresolved = extractPeople(
+    "Rahul Sharma\nPriya Gupta\nrahul@example.com\nSkills\nSQL Excel",
+    [["Rahul Sharma", "Priya Gupta"]],
+  ).candidates[0];
+  assert.equal(unresolved.fields.fullName, undefined);
+  assert.deepEqual(unresolved.nameSuggestions, [
+    "Rahul Sharma",
+    "Priya Gupta",
+    "SQL Excel",
+  ]);
+  assert.throws(
+    () =>
+      extractPeople(
+        "Rahul Sharma\nPriya Gupta\nrahul@example.com\npriya@example.com\nSkills\nSQL Excel",
+        [["Rahul Sharma"]],
+      ),
+    /No safely separable/,
+  );
+});
+test("PDF geometry restores header order, rejoins split glyphs and separates wide columns", () => {
+  const item = (str, x, y, size, width) => ({
+    str,
+    transform: [size, 0, 0, size, x, y],
+    height: size,
+    width,
+  });
+  const result = readPdfPage([
+    item("Excel SQL", 40, 500, 12, 55),
+    item("akshat@example.com", 40, 680, 12, 140),
+    item("Sales Dashboard", 40, 470, 12, 90),
+    item("Data Analyst", 40, 710, 14, 90),
+    item("AKSHAT", 40, 760, 28, 120),
+    item("SHARMA", 168, 760, 28, 125),
+    item("Education", 320, 640, 12, 60),
+    item("Skills", 40, 640, 12, 40),
+  ]);
+  assert.equal(result.text.split("\n")[0], "AKSHAT SHARMA");
+  assert.match(result.text, /Skills\nEducation/);
+  assert.deepEqual(result.nameHints, ["AKSHAT SHARMA"]);
+  const extracted = extractPeople(result.text, [result.nameHints])
+    .candidates[0];
+  assert.equal(extracted.fields.fullName, "AKSHAT SHARMA");
+  const fragments = readPdfPage([
+    item("AK", 40, 760, 28, 32),
+    item("SHAT", 72, 760, 28, 70),
+    item("Skills", 40, 640, 12, 40),
+    item("Email", 40, 620, 12, 30),
+  ]);
+  assert.equal(fragments.text.split("\n")[0], "AKSHAT");
+  assert.deepEqual(fragments.nameHints, ["AKSHAT"]);
+  const explicitSpace = readPdfPage([
+    item("Akshat ", 40, 760, 28, 110),
+    item("Sharma", 150, 760, 28, 95),
+  ]);
+  assert.equal(explicitSpace.text, "Akshat Sharma");
+  const inlineContact = readPdfPage([
+    item("Akshat Sharma", 40, 760, 26, 180),
+    item("akshat@example.com", 280, 760, 10, 130),
+    item("Data Analyst", 40, 725, 14, 90),
+    item("Education", 40, 600, 12, 65),
+  ]);
+  assert.match(inlineContact.text, /^Akshat Sharma\nakshat@example.com/);
+  assert.deepEqual(inlineContact.nameHints, ["Akshat Sharma"]);
+  const pages = extractPeople(
+    "Akshat Sharma\nPriya Gupta\nakshat@example.com\nSkills\nSQL Excel\n\f\nPriya Gupta\npriya@example.com\nSkills\nSQL Excel",
+    [[], ["Priya Gupta"]],
+  );
+  assert.equal(pages.candidates[0].fields.fullName, undefined);
+  assert.equal(pages.candidates[0].fields.email, "akshat@example.com");
+  assert.equal(pages.candidates[1].fields.fullName, "Priya Gupta");
 });
 test("indexed partial search is paged across thousands of persisted people", async () => {
   const records = Array.from({ length: 1500 }, (_, i) => ({

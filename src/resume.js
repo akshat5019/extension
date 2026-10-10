@@ -1,5 +1,6 @@
 import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import mammoth from "mammoth/mammoth.browser.js";
+import { readPdfPage } from "./core/pdf-layout";
 GlobalWorkerOptions.workerSrc = chrome.runtime.getURL("pdf.worker.mjs");
 
 export async function extractResume(file, options = {}) {
@@ -32,9 +33,8 @@ export async function extractResume(file, options = {}) {
       for (let i = 1; i <= pdf.numPages; i++) {
         const page = await pdf.getPage(i);
         const content = await page.getTextContent();
-        const pageText = content.items
-          .map((item) => item.str + (item.hasEOL ? "\n" : " "))
-          .join("");
+        const { text: pageText, nameHints } = readPdfPage(content.items);
+        options.nameHints?.push(nameHints);
         if (!pageText.trim())
           options.warnings?.push(
             `PDF page ${i} has no accessible text and was skipped; OCR may be needed.`,

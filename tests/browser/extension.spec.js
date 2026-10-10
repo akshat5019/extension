@@ -345,6 +345,125 @@ test("fills older full-name-only profiles, preserves existing names and uses nat
   await expect(job.locator("#family")).toHaveValue("");
 });
 
+test("extracts analyst resume headings from PDF layout when contact objects precede the name", async () => {
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  for (const [name, email] of [
+    ["AKSHAT SHARMA", "analyst@example.com"],
+    ["PRIYA", "priya-analyst@example.com"],
+  ]) {
+    const page = pdf.addPage();
+    // Simulate design tools storing contact/sidebar objects before the visible heading.
+    page.drawText(email, { x: 320, y: 750, size: 10, font });
+    page.drawText("Mumbai Maharashtra", { x: 320, y: 800, size: 10, font });
+    page.drawText("Data Analyst", { x: 40, y: 715, size: 14, font });
+    page.drawText("Portfolio", { x: 320, y: 725, size: 10, font });
+    page.drawText("Education", { x: 40, y: 650, size: 12, font });
+    page.drawText("Technical Skills", { x: 320, y: 650, size: 12, font });
+    page.drawText("National Technical Institute", {
+      x: 40,
+      y: 620,
+      size: 10,
+      font,
+    });
+    page.drawText("Excel SQL", { x: 320, y: 620, size: 10, font });
+    page.drawText("Projects", { x: 40, y: 570, size: 12, font });
+    page.drawText("Sales Dashboard", { x: 40, y: 545, size: 10, font });
+    page.drawText(name, { x: 40, y: 770, size: 26, font });
+  }
+  await upload("analyst-resumes.pdf", await pdf.save());
+  await expect(popup.getByLabel("Full name", { exact: true })).toHaveValue(
+    "AKSHAT SHARMA",
+  );
+  await expect(popup.getByLabel("First name", { exact: true })).toHaveValue(
+    "AKSHAT",
+  );
+  await expect(popup.getByLabel("Last name", { exact: true })).toHaveValue(
+    "SHARMA",
+  );
+  await expect(
+    popup.getByText("Several possible names", { exact: false }),
+  ).toHaveCount(0);
+  await popup.getByLabel("Record decision").selectOption("create");
+  await popup.getByRole("button", { name: "Next record", exact: true }).click();
+  await expect(popup.getByLabel("Full name", { exact: true })).toHaveValue(
+    "PRIYA",
+  );
+  await expect(popup.getByLabel("First name", { exact: true })).toHaveValue(
+    "PRIYA",
+  );
+  await popup.getByLabel("Record decision").selectOption("create");
+  await confirmImport();
+  await select("AKSHAT SHARMA");
+  await popup.getByRole("button", { name: "Scan form", exact: true }).click();
+  await popup
+    .getByRole("button", { name: "Fill form", exact: true })
+    .last()
+    .click();
+  await expect(job.locator("#name")).toHaveValue("AKSHAT SHARMA");
+  await expect(job.locator("#email")).toHaveValue("analyst@example.com");
+  const saved = await popup.evaluate(
+    async () =>
+      (
+        await chrome.runtime.sendMessage({
+          type: "DB_SEARCH",
+          query: "priya-analyst@example.com",
+        })
+      ).result.items[0],
+  );
+  expect(saved.fields.fullName).toBe("PRIYA");
+  expect(saved.fields.lastName).toBeUndefined();
+});
+
+test("offers selectable names for ambiguous imports without requiring name retyping", async () => {
+  await upload(
+    "ambiguous-resume.txt",
+    "Rahul Sharma\nPriya Gupta\nrahul@example.com\nSkills\nSQL Excel",
+  );
+  await expect(popup.getByLabel("Full name", { exact: true })).toHaveValue("");
+  await popup
+    .getByRole("button", { name: "Use Priya Gupta", exact: true })
+    .click();
+  await expect(popup.getByLabel("Full name", { exact: true })).toHaveValue(
+    "Priya Gupta",
+  );
+  await expect(popup.getByLabel("First name", { exact: true })).toHaveValue(
+    "Priya",
+  );
+  await expect(popup.getByLabel("Last name", { exact: true })).toHaveValue(
+    "Gupta",
+  );
+  await popup
+    .getByRole("button", { name: "Use Rahul Sharma", exact: true })
+    .click();
+  await expect(popup.getByLabel("First name", { exact: true })).toHaveValue(
+    "Rahul",
+  );
+  await expect(popup.getByLabel("Last name", { exact: true })).toHaveValue(
+    "Sharma",
+  );
+  await popup.getByLabel("Record decision").selectOption("create");
+  await confirmImport();
+  await select("Rahul Sharma");
+  await popup.getByRole("button", { name: "Scan form", exact: true }).click();
+  await popup
+    .getByRole("button", { name: "Fill form", exact: true })
+    .last()
+    .click();
+  await expect(job.locator("#name")).toHaveValue("Rahul Sharma");
+  const saved = await popup.evaluate(
+    async () =>
+      (
+        await chrome.runtime.sendMessage({
+          type: "DB_SEARCH",
+          query: "rahul@example.com",
+        })
+      ).result.items[0],
+  );
+  expect(saved.fields.firstName).toBe("Rahul");
+  expect(saved.fields.lastName).toBe("Sharma");
+});
+
 test("imports multiple people, requires selection, fills only one person, confirms learning and supports undo", async () => {
   await seed();
   await select("Rahul Sharma");

@@ -7,6 +7,7 @@ import {
   display,
   personName,
   cleanFields,
+  completeNameFields,
   combine,
   conflicts,
   identityMatches,
@@ -1009,6 +1010,38 @@ function App() {
                   {w}
                 </p>
               ))}
+              {row.nameSuggestions?.length && (
+                <div>
+                  <p>
+                    Possible names found in the document. Choose the correct
+                    person to avoid retyping.
+                  </p>
+                  <div className="inline">
+                    {row.nameSuggestions.map((name) => (
+                      <button
+                        key={name}
+                        disabled={busy}
+                        onClick={() =>
+                          changeRow({
+                            fields: completeNameFields({
+                              ...row.fields,
+                              fullName: name,
+                              firstName: "",
+                              middleName: "",
+                              lastName: "",
+                            }),
+                            action: "",
+                            target: undefined,
+                            choices: {},
+                          })
+                        }
+                      >
+                        Use {name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
               <FieldEditor
                 key={rowIndex}
                 fields={row.fields}

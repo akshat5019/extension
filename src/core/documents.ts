@@ -17,8 +17,9 @@ export async function readDocument(
   onProgress("Reading document locally…");
   let text: string | undefined;
   const warnings: string[] = [];
+  const nameHints: string[][] = [];
   if (["pdf", "docx"].includes(ext || ""))
-    text = await extractResume(file, { warnings, onProgress });
+    text = await extractResume(file, { warnings, onProgress, nameHints });
   if (intelligence && ["txt", "pdf", "docx"].includes(ext || "")) {
     onProgress("Interpreting person records with the on-device model…");
     const result = await intelligence.extract(
@@ -58,7 +59,7 @@ export async function readDocument(
           ),
         );
       };
-      worker.postMessage({ ext, text, bytes }, [bytes]);
+      worker.postMessage({ ext, text, bytes, nameHints }, [bytes]);
     });
     if (!result.candidates.length)
       throw new Error("No person records were found.");

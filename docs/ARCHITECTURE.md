@@ -9,6 +9,8 @@ The extension has four trust-separated components:
 
 `src/core/documents.ts` orchestrates local PDF/DOCX reads and a cancellable parsing worker. `src/document-worker.ts` reads TXT/CSV/XLSX/JSON. `extraction.ts` separates records; `mapping.ts` implements `FieldMapper`; `ai.ts` implements optional `IntelligenceService` using an opt-in on-device model. Browser APIs are confined to orchestration/UI and background/content boundaries. Existing local parsing libraries are bundled; no CDN scripts are loaded.
 
+`pdf-layout.ts` reconstructs horizontal text lines from page coordinates, rejoins adjacent glyph fragments and separates wide columns. It sends temporary prominent heading hints to the extraction worker. `name-detection.ts` excludes common job/section titles and uses a heading or nearby contact identity to suggest a resume name. Hints only apply to names present in the current record, and conflicting identifiers suppress header inference. Ambiguous candidate names are presented as bounded selectable suggestions in the reviewed import UI; they never trigger a database write or merge. No filename/email-derived names are generated. Geometric/font heuristics are not proof of identity, and unusual or rotated layouts still require source review.
+
 ## Database and schema
 
 Database `personal-assist-v2`, IndexedDB version 1:
