@@ -238,6 +238,79 @@ async function seed() {
   await confirmImport();
 }
 
+test("keeps format readers unloaded during startup/CSV import and offers selected-person quick fill", async () => {
+  const readerRequests = [];
+  const track = (request) => {
+    if (
+      /\/chunks\/(?:pdf-|mammoth\.browser-|exceljs\.min-)/.test(request.url())
+    )
+      readerRequests.push(request.url());
+  };
+  popup.on("request", track);
+  await popup.reload();
+  await expect(
+    popup.getByRole("button", { name: "Scan & fill", exact: true }),
+  ).toBeDisabled();
+  await seed();
+  await select("Rahul Sharma");
+  expect(readerRequests).toEqual([]);
+  await popup.getByRole("button", { name: "Scan & fill", exact: true }).click();
+  await expect(job.locator("#name")).toHaveValue("Rahul Sharma");
+  await expect(job.locator("#email")).toHaveValue("rahul@example.com");
+  await expect(job.locator("#country")).toHaveValue("IN");
+  await expect(job.locator("#address")).toHaveValue("");
+  await expect(job.locator("#bank")).toHaveValue("");
+  await expect(job.locator("#password")).toHaveValue("");
+  await expect(job.locator("#consent")).not.toBeChecked();
+  await expect(job.locator("#dob")).toHaveValue("");
+  expect(await job.evaluate(() => window.submitted)).toBe(false);
+  await popup.getByRole("button", { name: "Undo autofill" }).click();
+  await expect(job.locator("#email")).toHaveValue("");
+  await upload("resume.docx", await readFile("tests/fixtures/resume.docx"));
+  expect(readerRequests.some((url) => url.includes("mammoth.browser-"))).toBe(
+    true,
+  );
+  expect(readerRequests.some((url) => /\/(pdf-|exceljs\.min-)/.test(url))).toBe(
+    false,
+  );
+  popup.off("request", track);
+});
+
+test("quick fill rescans changed steps without old staged answers and rejects stale profile revisions", async () => {
+  await seed();
+  await select("Rahul Sharma");
+  await popup.getByRole("button", { name: "Scan form", exact: true }).click();
+  await popup.getByLabel("Answer Home Address").fill("Old step address");
+  await job.evaluate(() => {
+    document.querySelector("#address").closest("label").outerHTML =
+      '<label>City<input id="city" required></label>';
+  });
+  await popup.getByRole("button", { name: "Scan & fill", exact: true }).click();
+  await expect(job.locator("#city")).toHaveValue("");
+  await expect(job.locator("#email")).toHaveValue("rahul@example.com");
+  await expect(popup.getByLabel("Answer City")).toHaveValue("");
+  await popup.getByRole("button", { name: "Undo autofill" }).click();
+  await popup.evaluate(async () => {
+    const r = await chrome.runtime.sendMessage({
+      type: "DB_SEARCH",
+      query: "rahul@example.com",
+    });
+    const person = r.result.items[0];
+    const saved = await chrome.runtime.sendMessage({
+      type: "DB_SAVE",
+      id: person.id,
+      revision: person.revision,
+      fields: { ...person.fields, email: "updated@example.com" },
+    });
+    if (saved.error) throw new Error(saved.error);
+  });
+  await popup.getByRole("button", { name: "Scan & fill", exact: true }).click();
+  await expect(popup.locator("#status")).toContainText("Profile changed");
+  await expect(job.locator("#name")).toHaveValue("");
+  await expect(job.locator("#email")).toHaveValue("");
+  expect(await job.evaluate(() => window.submitted)).toBe(false);
+});
+
 test("imports an inline PDF resume and fills names, email, city and country without manual answers", async () => {
   const pdf = await PDFDocument.create();
   const font = await pdf.embedFont(StandardFonts.Helvetica);
@@ -885,6 +958,12 @@ test("manages profiles, imports JSON exports, and protects database from content
       (await chrome.runtime.sendMessage({ type: "DB_EXPORT" })).result,
   );
   expect(exported.profiles.length).toBe(2);
+  expect(
+    exported.profiles.every(
+      (person) =>
+        person.identityKeys === undefined && person.searchTokens === undefined,
+    ),
+  ).toBe(true);
   await job.addScriptTag({ path: resolve("dist/content.js") });
   expect(
     await job.evaluate(() => chrome.runtime.sendMessage({ type: "DB_EXPORT" })),

@@ -1,4 +1,3 @@
-import { extractResume } from "../resume.js";
 import type { Extraction, IntelligenceService } from "./extraction";
 export async function readDocument(
   file: File,
@@ -18,8 +17,15 @@ export async function readDocument(
   let text: string | undefined;
   const warnings: string[] = [];
   const nameHints: string[][] = [];
-  if (["pdf", "docx"].includes(ext || ""))
-    text = await extractResume(file, { warnings, onProgress, nameHints });
+  if (ext === "pdf" || (ext === "docx" && intelligence)) {
+    const { extractResume } = await import("../resume.js");
+    text = await extractResume(file, {
+      warnings,
+      onProgress,
+      nameHints,
+      bytes,
+    });
+  }
   if (intelligence && ["txt", "pdf", "docx"].includes(ext || "")) {
     onProgress("Interpreting person records with the on-device model…");
     const result = await intelligence.extract(
@@ -31,7 +37,9 @@ export async function readDocument(
       fingerprint,
     };
   }
-  const worker = new Worker(chrome.runtime.getURL("document-worker.js"));
+  const worker = new Worker(chrome.runtime.getURL("document-worker.js"), {
+    type: "module",
+  });
   try {
     const result = await new Promise<Extraction>((resolve, reject) => {
       const timer = setTimeout(
@@ -59,7 +67,11 @@ export async function readDocument(
           ),
         );
       };
-      worker.postMessage({ ext, text, bytes, nameHints }, [bytes]);
+      // PDF's own worker may transfer/detach the original buffer. Once text is
+      // extracted, neither that buffer nor a second copy belongs in this worker.
+      if (text !== undefined) worker.postMessage({ ext, text, nameHints });
+      else
+        worker.postMessage({ ext, name: file.name, bytes, nameHints }, [bytes]);
     });
     if (!result.candidates.length)
       throw new Error("No person records were found.");

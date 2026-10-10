@@ -5,6 +5,7 @@ import {
   searchable,
   normal,
   identityMatches,
+  identityKeys,
   combine,
   type Fields,
   type Person,
@@ -44,6 +45,9 @@ export interface ProfileRepository {
   ): Promise<Person>;
   remove(id: string): Promise<void>;
   matches(fields: Fields): Promise<{ person: Person; reasons: string[] }[]>;
+  analyze(
+    records: Fields[],
+  ): Promise<{ person: Person; reasons: string[] }[][]>;
   merge(
     targetId: string,
     sourceId: string,
@@ -78,6 +82,20 @@ export class LocalRepository extends Dexie implements ProfileRepository {
       documents: "id,&fingerprint,importedAt",
       settings: "key",
     });
+    this.version(2)
+      .stores({
+        profiles: "id,updatedAt,status,*searchTokens,*identityKeys",
+        documents: "id,&fingerprint,importedAt",
+        settings: "key",
+      })
+      .upgrade((tx) =>
+        tx
+          .table("profiles")
+          .toCollection()
+          .modify((person: Person) => {
+            person.identityKeys = identityKeys(person.fields);
+          }),
+      );
   }
   async getSetting(key: string) {
     return (await this.settings.get(key))?.value;
@@ -103,20 +121,54 @@ export class LocalRepository extends Dexie implements ProfileRepository {
     const q = normal(query);
     const term = q.replace(/[()+.\s-]/g, "");
     const searchTerm = /^[\d()+.\s-]+$/.test(q) ? term : q;
-    const collection = searchTerm
-      ? this.profiles
-          .where("searchTokens")
-          .equals(searchTerm.slice(0, 3))
-          .filter((p) => searchable(p.fields).includes(searchTerm))
-      : this.profiles.orderBy("updatedAt").reverse();
-    const total = await collection.clone().count();
-    return {
-      items: await collection
-        .offset(Math.max(0, offset))
-        .limit(Math.min(50, Math.max(1, limit)))
-        .toArray(),
-      total,
-    };
+    const start = Math.max(0, offset),
+      size = Math.min(50, Math.max(1, limit));
+    return this.transaction("r", this.profiles, async () => {
+      if (!searchTerm)
+        return {
+          items: await this.profiles
+            .orderBy("updatedAt")
+            .reverse()
+            .offset(start)
+            .limit(size)
+            .toArray(),
+          total: await this.profiles.count(),
+        };
+      // Sample prefix/middle/suffix indexes. A rare trigram avoids decoding all
+      // profiles that share a common name/email prefix. Verify full substrings.
+      const grams = [
+        ...new Set([
+          searchTerm.slice(0, 3),
+          searchTerm.slice(
+            Math.max(0, Math.floor((searchTerm.length - 3) / 2)),
+            Math.max(0, Math.floor((searchTerm.length - 3) / 2)) + 3,
+          ),
+          searchTerm.slice(-3),
+        ]),
+      ];
+      let gram = grams[0];
+      if (grams.length > 1) {
+        const counts = await Promise.all(
+          grams.map((key) =>
+            this.profiles.where("searchTokens").equals(key).count(),
+          ),
+        );
+        const smallest = Math.min(...counts);
+        if (!smallest) return { items: [], total: 0 };
+        gram = grams[counts.indexOf(smallest)];
+      }
+      const items: Person[] = [];
+      let total = 0;
+      await this.profiles
+        .where("searchTokens")
+        .equals(gram)
+        .each((person) => {
+          if (!searchable(person.fields).includes(searchTerm)) return;
+          if (total >= start && items.length < size) items.push(person);
+          total++;
+        });
+      return { items, total };
+    });
   }
   get(id: string) {
     return this.profiles.get(id);
@@ -153,6 +205,7 @@ export class LocalRepository extends Dexie implements ProfileRepository {
         createdAt: old?.createdAt || at,
         updatedAt: at,
         searchTokens: tokens(cleaned),
+        identityKeys: identityKeys(cleaned),
       };
       await this.profiles.put(p);
       return p;
@@ -162,25 +215,27 @@ export class LocalRepository extends Dexie implements ProfileRepository {
     await this.profiles.delete(id);
   }
   async matches(fields: Fields) {
+    return this.transaction("r", this.profiles, () => this.findMatches(fields));
+  }
+  private async findMatches(
+    fields: Fields,
+    cache?: Map<string, Promise<Person[]>>,
+  ) {
     const candidates = new Map<string, Person>();
-    for (const value of [
-      fields.email,
-      fields.alternateEmails,
-      fields.phone,
-      fields.alternatePhones,
-      fields.fullName,
-      fields.firstName,
-    ]
-      .flat()
-      .filter(Boolean)) {
-      const result = await this.search(
-        /^[+\d ().-]+$/.test(String(value))
-          ? String(value).replace(/\D/g, "").slice(-10)
-          : String(value),
-        0,
-        50,
-      );
-      for (const p of result.items) candidates.set(p.id, p);
+    for (const key of identityKeys(cleanFields(fields))) {
+      let result = cache?.get(key);
+      if (!result) {
+        result = this.profiles
+          .where("identityKeys")
+          .equals(key)
+          .limit(50)
+          .toArray();
+        if (cache) {
+          if (cache.size >= 256) cache.delete(cache.keys().next().value!);
+          cache.set(key, result);
+        }
+      }
+      for (const person of await result) candidates.set(person.id, person);
     }
     return [...candidates.values()]
       .map((person) => ({
@@ -188,6 +243,25 @@ export class LocalRepository extends Dexie implements ProfileRepository {
         reasons: identityMatches(person.fields, fields),
       }))
       .filter((x) => x.reasons.length);
+  }
+  async analyze(records: Fields[]) {
+    if (!Array.isArray(records) || records.length > 10000)
+      throw new Error("Invalid import batch.");
+    return this.transaction("r", this.profiles, async () => {
+      if (!(await this.profiles.count())) return records.map(() => []);
+      const cache = new Map<string, Promise<Person[]>>();
+      const result: { person: Person; reasons: string[] }[][] = [];
+      // Bounded concurrency; lookup reuse lasts only for this read snapshot.
+      for (let i = 0; i < records.length; i += 8)
+        result.push(
+          ...(await Promise.all(
+            records
+              .slice(i, i + 8)
+              .map((fields) => this.findMatches(fields, cache)),
+          )),
+        );
+      return result;
+    });
   }
   async merge(
     targetId: string,

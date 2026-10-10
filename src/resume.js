@@ -1,21 +1,21 @@
-import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
-import mammoth from "mammoth/mammoth.browser.js";
 import { readPdfPage } from "./core/pdf-layout";
-GlobalWorkerOptions.workerSrc = chrome.runtime.getURL("pdf.worker.mjs");
 
 export async function extractResume(file, options = {}) {
   if (file.size > 25 * 1024 * 1024)
     throw new Error("Choose a document smaller than 25 MB.");
-  const data = await file.arrayBuffer();
+  const data = options.bytes ?? (await file.arrayBuffer());
   const ext = file.name.split(".").at(-1).toLowerCase();
   let text;
   if (ext === "txt") text = new TextDecoder().decode(data);
   else if (ext === "docx") {
+    const { default: mammoth } = await import("mammoth/mammoth.browser.js");
     const parsed = await mammoth.extractRawText({ arrayBuffer: data });
     text = parsed.value;
     for (const message of parsed.messages)
       options.warnings?.push(message.message);
   } else if (ext === "pdf") {
+    const { getDocument, GlobalWorkerOptions } = await import("pdfjs-dist");
+    GlobalWorkerOptions.workerSrc = chrome.runtime.getURL("pdf.worker.mjs");
     const loading = getDocument({
       data,
       isEvalSupported: false,

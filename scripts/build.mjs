@@ -1,24 +1,37 @@
 import { build } from "esbuild";
-import { mkdir, copyFile, cp, rm } from "node:fs/promises";
+import { mkdir, copyFile, cp, rm, writeFile } from "node:fs/promises";
 await rm("dist", { recursive: true, force: true });
 await mkdir("dist", { recursive: true });
 await cp("icons", "dist/icons", { recursive: true });
-await build({
-  entryPoints: {
-    app: "src/ui/App.tsx",
-    content: "src/content.ts",
-    background: "src/background.ts",
-    "document-worker": "src/document-worker.ts",
-  },
+const shared = {
   outdir: "dist",
   bundle: true,
   minify: true,
   define: { "process.env.NODE_ENV": '"production"' },
-  format: "iife",
   target: "chrome120",
   logLevel: "info",
   jsx: "automatic",
+};
+// Injected content scripts and the classic service worker remain self-contained.
+await build({
+  ...shared,
+  format: "iife",
+  entryPoints: { content: "src/content.ts", background: "src/background.ts" },
 });
+// Extension pages/module workers can load packaged format readers on demand.
+const modules = await build({
+  ...shared,
+  format: "esm",
+  splitting: true,
+  metafile: true,
+  chunkNames: "chunks/[name]-[hash]",
+  entryPoints: {
+    app: "src/ui/App.tsx",
+    "document-worker": "src/document-worker.ts",
+  },
+});
+await mkdir(".test-core", { recursive: true });
+await writeFile(".test-core/build-meta.json", JSON.stringify(modules.metafile));
 await copyFile(
   "node_modules/pdfjs-dist/build/pdf.worker.mjs",
   "dist/pdf.worker.mjs",

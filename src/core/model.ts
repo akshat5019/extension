@@ -15,6 +15,7 @@ export interface Person {
   createdAt: string;
   updatedAt: string;
   searchTokens: string[];
+  identityKeys?: string[];
 }
 export interface DocumentRecord {
   id: string;
@@ -172,6 +173,25 @@ export function tokens(fields: Fields) {
     for (let i = 0; i <= text.length - size; i++)
       values.add(text.slice(i, i + size));
   return [...values];
+}
+// Derived lookup indexes are not proof of identity and never trigger a merge.
+export function identityKeys(fields: Fields): string[] {
+  const keys = new Set<string>();
+  for (const value of [fields.email, fields.alternateEmails]
+    .flat()
+    .filter(Boolean))
+    keys.add(`email:${normal(value)}`);
+  for (const value of [fields.phone, fields.alternatePhones]
+    .flat()
+    .filter(Boolean)) {
+    const digits = phoneKey(value);
+    if (digits.length < 7) continue;
+    keys.add(`phone:${digits}`);
+    if (digits.length >= 10) keys.add(`phone-tail:${digits.slice(-10)}`);
+  }
+  const name = normal(personName(fields));
+  if (name && name !== "unnamed profile") keys.add(`name:${name}`);
+  return [...keys];
 }
 export function identityMatches(a: Fields, b: Fields) {
   const emails = (f: Fields) =>

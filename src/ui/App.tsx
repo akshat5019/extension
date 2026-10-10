@@ -201,6 +201,8 @@ function App() {
       "delete" | "clear" | "export" | undefined
     >();
   const searchVersion = useRef(0);
+  const previousQuery = useRef<string | undefined>(undefined);
+  const [searching, setSearching] = useState(false);
   const [editorChoices, setEditorChoices] = useState<
     Record<string, ConflictChoice>
   >({});
@@ -226,16 +228,28 @@ function App() {
   }, []);
   useEffect(() => {
     const version = ++searchVersion.current;
+    const delay =
+      previousQuery.current !== undefined && previousQuery.current !== query
+        ? 120
+        : 0;
+    previousQuery.current = query;
+    setSearching(true);
     const timer = setTimeout(() => {
       db("SEARCH", { query, offset })
         .then((r) => {
           if (version === searchVersion.current) {
             setResults(r.items);
             setTotal(r.total);
+            setSearching(false);
           }
         })
-        .catch((e) => setNotice(e.message));
-    }, 150);
+        .catch((e) => {
+          if (version === searchVersion.current) {
+            setSearching(false);
+            setNotice(e.message);
+          }
+        });
+    }, delay);
     return () => clearTimeout(timer);
   }, [query, offset, refresh]);
   useEffect(() => {
@@ -271,38 +285,41 @@ function App() {
     setScan(result);
     setAnswers({});
     setFillReport([]);
+    setLearning(undefined);
+    setLearningPerson(undefined);
     setNotice(
       result.fields.length
         ? `Detected ${result.fields.length} fields. ${result.integration || "Standard website forms"}. Review before filling.${result.accessibleFrames ? ` Scanned ${result.accessibleFrames} accessible embedded forms.` : ""}${result.inaccessibleFrames ? ` ${result.inaccessibleFrames} protected or cross-origin frames need manual entry.` : ""}${result.customControls ? " Custom dropdowns may need manual selection." : ""}${result.truncated ? " Scan limit reached; some controls were skipped." : ""}`
         : `No supported visible fields found. Open the personal-details step and scan again.${result.inaccessibleFrames ? " Embedded forms are protected or on another origin." : ""}`,
     );
+    return result;
   }
-  async function fill() {
-    if (!selected || !scan || !tab?.id)
+  async function fill(snapshot = scan, providedAnswers = answers) {
+    if (!selected || !snapshot || !tab?.id)
       throw new Error("Select a person and scan this page first.");
     const latest = await db<Person>("GET", { id: selected.id });
     if (!latest || latest.revision !== selected.revision)
       throw new Error("Profile changed. Select it again before filling.");
     const result = await form(tab.id, "FILL", {
-      scanId: scan.scanId,
+      scanId: snapshot.scanId,
       profileId: selected.id,
       fields: selected.fields,
-      answers,
+      answers: providedAnswers,
       includePersonal,
     });
-    setScan({ ...scan, fields: result.fields });
+    setScan({ ...snapshot, fields: result.fields });
     setFillReport(result.results);
     const proposed: Fields = {};
-    for (const f of scan.fields)
+    for (const f of snapshot.fields)
       if (
-        answers[f.id] &&
+        providedAnswers[f.id] &&
         result.results.some((r: any) => r.id === f.id && r.filled) &&
         f.key &&
         !f.reason
       )
         proposed[f.key] =
-          f.options?.find((o) => o.value === answers[f.id])?.label ||
-          answers[f.id];
+          f.options?.find((o) => o.value === providedAnswers[f.id])?.label ||
+          providedAnswers[f.id];
     if (Object.keys(proposed).length) {
       setLearning(proposed);
       setLearningPerson(selected);
@@ -311,6 +328,11 @@ function App() {
     setNotice(
       `Filled ${result.results.filter((r: any) => r.filled).length} fields for ${personName(selected.fields)}. Review the page and submit manually. New answers are not saved until you confirm.`,
     );
+  }
+  async function quickFill() {
+    const current = await scanPage();
+    // Always create a fresh page snapshot and perform the same revision check.
+    await fill(current, {});
   }
   async function importFile(file: File) {
     setRows([]);
@@ -435,7 +457,9 @@ function App() {
           }}
         />
         <div className="inline">
-          <small>{total} matching profiles</small>
+          <small aria-live="polite">
+            {searching ? "Searching profiles…" : `${total} matching profiles`}
+          </small>
           <button
             onClick={() => {
               setQuery("");
@@ -471,7 +495,7 @@ function App() {
             {results.map((p) => (
               <button
                 className={`person ${selected?.id === p.id ? "selected" : ""}`}
-                disabled={busy}
+                disabled={busy || searching}
                 key={p.id}
                 onClick={() => choose(p)}
               >
@@ -488,7 +512,7 @@ function App() {
               </button>
             ))}
           </div>
-          {!results.length && (
+          {!searching && !results.length && (
             <p>
               No matching profile found. Add a profile or import a document.
             </p>
@@ -578,8 +602,9 @@ function App() {
             {tab?.url || "Open this extension from a website tab."}
           </p>
           <p>
-            Select a person, scan, then fill. Existing values remain unchanged.
-            Forms are submitted manually.
+            Select a person and use Scan &amp; fill, or scan first to review
+            fields. Existing values remain unchanged. Forms are submitted
+            manually.
           </p>
           <p>
             Import your resume once to prepare full, first and last names,
@@ -597,6 +622,13 @@ function App() {
             Include date of birth and gender from this profile for this fill
           </label>
           <div className="inline">
+            <button
+              className="primary"
+              disabled={busy || !selected || !tab?.id}
+              onClick={() => run(quickFill)}
+            >
+              Scan &amp; fill
+            </button>
             <button
               className="primary"
               disabled={busy || !selected}

@@ -73,12 +73,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         case "DB_ANALYZE": {
           if (!Array.isArray(message.records) || message.records.length > 10000)
             throw new Error("Invalid import batch.");
-          const hasProfiles = (await repository.stats()).total > 0;
-          result = [];
-          for (const fields of message.records)
-            (result as unknown[]).push(
-              hasProfiles ? await repository.matches(fields) : [],
-            );
+          result = await repository.analyze(message.records);
           break;
         }
         case "DB_MERGE":
@@ -106,7 +101,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
             schemaVersion: 1,
             exportedAt: new Date().toISOString(),
             profiles: (await repository.all()).map(
-              ({ searchTokens, ...person }) => person,
+              ({ searchTokens, identityKeys, ...person }) => person,
             ),
             legacyAnswers:
               (await repository.getSetting("legacyAnswers")) || undefined,

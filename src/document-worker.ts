@@ -1,4 +1,3 @@
-import ExcelJS from "exceljs";
 import { extractCSV, extractPeople, rowsToRecords } from "./core/extraction";
 import { cleanFields, type Fields } from "./core/model";
 self.onmessage = async ({ data }) => {
@@ -7,6 +6,7 @@ self.onmessage = async ({ data }) => {
     let result;
     self.postMessage({ progress: "Separating and validating person records…" });
     if (ext === "xlsx") {
+      const { default: ExcelJS } = await import("exceljs");
       const book = new ExcelJS.Workbook();
       await book.xlsx.load(bytes);
       const candidates = [];
@@ -33,6 +33,16 @@ self.onmessage = async ({ data }) => {
         warnings.push(...parsed.warnings.map((x) => `${sheet.name}: ${x}`));
       }
       result = { candidates, warnings };
+    } else if (ext === "docx" && data.text === undefined) {
+      self.postMessage({ progress: "Reading Word document locally…" });
+      const { extractResume } = await import("./resume.js");
+      const warnings: string[] = [];
+      const text = await extractResume(
+        { name: data.name, size: bytes.byteLength },
+        { bytes, warnings },
+      );
+      const extracted = extractPeople(text);
+      result = { ...extracted, warnings: [...warnings, ...extracted.warnings] };
     } else if (ext === "json") {
       const parsed = JSON.parse(new TextDecoder().decode(bytes));
       const rows = Array.isArray(parsed) ? parsed : parsed.profiles;

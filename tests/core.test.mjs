@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import "fake-indexeddb/auto";
+import Dexie from "dexie";
 import { build } from "esbuild";
 await build({
   entryPoints: {
@@ -20,7 +21,8 @@ await build({
 const { LocalRepository } = await import("../.test-core/repository.js");
 const { extractCSV, extractPeople } =
   await import("../.test-core/extraction.js");
-const { combine, completeNameFields } = await import("../.test-core/model.js");
+const { combine, completeNameFields, tokens } =
+  await import("../.test-core/model.js");
 const { mapper } = await import("../.test-core/mapping.js");
 const { validateModelRecords } = await import("../.test-core/ai.js");
 const { readPdfPage } = await import("../.test-core/pdfLayout.js");
@@ -306,14 +308,28 @@ test("indexed partial search is paged across thousands of persisted people", asy
   }));
   await repository.commitImport("large", "people.csv", records, []);
   assert.equal((await repository.stats()).total, 1500);
-  const first = await repository.search("PERSON", 0, 20),
-    second = await repository.search("person", 20, 20);
+  let reads = 0;
+  repository.profiles.hook("reading", (person) => {
+    reads++;
+    return person;
+  });
+  const first = await repository.search("PERSON", 0, 20);
+  assert.ok(
+    reads <= 1500,
+    `Broad search read ${reads} profiles; count and page must share one pass.`,
+  );
+  const second = await repository.search("person", 20, 20);
   assert.equal(first.total, 1500);
   assert.equal(first.items.length, 20);
   assert.notEqual(first.items[0].id, second.items[0].id);
+  reads = 0;
   assert.equal(
     (await repository.search("person1423@")).items[0].fields.fullName,
     "Person 1423",
+  );
+  assert.ok(
+    reads < 50,
+    `Selective search decoded ${reads} profiles despite a common prefix.`,
   );
   assert.equal(
     (await repository.search("98765 01423")).items[0].fields.fullName,
@@ -323,6 +339,145 @@ test("indexed partial search is paged across thousands of persisted people", asy
   const reopened = new LocalRepository(repository.name);
   assert.equal((await reopened.stats()).total, 1500);
   reopened.close();
+});
+test("upgrades existing profiles to direct identity indexes without losing data", async () => {
+  const old = new Dexie(repository.name);
+  old.version(1).stores({
+    profiles: "id,updatedAt,status,*searchTokens",
+    documents: "id,&fingerprint,importedAt",
+    settings: "key",
+  });
+  const fields = {
+    fullName: "Legacy Person",
+    email: "old@example.com",
+    phone: "+91 9876543210",
+  };
+  const person = {
+    id: "existing-id",
+    fields,
+    schemaVersion: 1,
+    revision: 7,
+    status: "review",
+    sources: [{ name: "Old resume", at: "2026-01-01", fields: ["email"] }],
+    createdAt: "2026-01-01",
+    updatedAt: "2026-01-02",
+    searchTokens: tokens(fields),
+  };
+  await old.table("profiles").put(person);
+  await old.table("documents").put({
+    id: "old-document",
+    name: "resume.pdf",
+    fingerprint: "old-fingerprint",
+    importedAt: "2026-01-01",
+    count: 1,
+    warnings: [],
+  });
+  await old.table("settings").put({ key: "kept-setting", value: true });
+  old.close();
+  await repository.open();
+  const upgraded = await repository.get(person.id);
+  assert.deepEqual(
+    { ...upgraded, identityKeys: undefined },
+    { ...person, identityKeys: undefined },
+  );
+  assert.ok(upgraded.identityKeys.includes("email:old@example.com"));
+  assert.equal(
+    (await repository.matches({ phone: "9876543210" }))[0].person.id,
+    person.id,
+  );
+  assert.equal(
+    (await repository.documents.get("old-document")).fingerprint,
+    "old-fingerprint",
+  );
+  assert.equal(await repository.getSetting("kept-setting"), true);
+  repository.close();
+  await repository.open();
+  assert.equal((await repository.get(person.id)).revision, 7);
+});
+test("batch duplicate checks reuse bounded lookups and never reuse stale profile data", async () => {
+  const p = await repository.save({
+    firstName: "Priya",
+    lastName: "Sharma",
+    email: "priya@example.com",
+    phone: "+91 9876543210",
+    alternateEmails: ["alternate@example.com"],
+  });
+  let reads = 0;
+  repository.profiles.hook("reading", (person) => {
+    reads++;
+    return person;
+  });
+  const records = Array.from({ length: 100 }, () => ({
+    fullName: "Priya Sharma",
+    email: "alternate@example.com",
+    phone: "9876543210",
+  }));
+  const result = await repository.analyze(records);
+  assert.equal(result.length, 100);
+  assert.ok(
+    result.every((matches) =>
+      matches.some(
+        (match) =>
+          match.person.id === p.id &&
+          match.reasons.includes("same email") &&
+          match.reasons.includes("same phone"),
+      ),
+    ),
+  );
+  assert.ok(reads <= 8, `Repeated identity lookups read ${reads} profiles.`);
+  const changed = await repository.save(
+    { ...p.fields, email: "changed@example.com" },
+    { id: p.id, revision: p.revision },
+  );
+  assert.equal(
+    (await repository.analyze(records))[0][0].person.fields.email,
+    "changed@example.com",
+  );
+  assert.equal(
+    (await repository.matches({ firstName: "Priya", lastName: "Sharma" }))[0]
+      .person.revision,
+    changed.revision,
+  );
+  await repository.remove(p.id);
+  assert.ok(
+    (await repository.analyze(records)).every((matches) => !matches.length),
+  );
+  await assert.rejects(
+    repository.analyze(Array(10001).fill({})),
+    /Invalid import batch/,
+  );
+});
+test("direct identifiers find strong matches beyond the bounded similar-name results", async () => {
+  await repository.commitImport(
+    "same-names",
+    "names.csv",
+    Array.from({ length: 61 }, (_, i) => ({
+      action: "create",
+      fields: { fullName: "Same Name", email: `person${i}@example.com` },
+    })),
+    [],
+  );
+  // Index duplicates sort by primary key. Choose the last profile so it is
+  // definitely outside the first 50 name hints, regardless of random UUIDs.
+  const last = await repository.profiles.orderBy("id").last();
+  const target = await repository.save(
+    {
+      ...last.fields,
+      email: "strong@example.com",
+    },
+    { id: last.id, revision: last.revision },
+  );
+  const matches = await repository.matches({
+    fullName: "Same Name",
+    email: "strong@example.com",
+  });
+  assert.ok(
+    matches.some(
+      (match) =>
+        match.person.id === target.id && match.reasons.includes("same email"),
+    ),
+  );
+  assert.equal((await repository.stats()).total, 61);
 });
 test("names are potential matches, never automatic merge identities", async () => {
   const a = await repository.save({

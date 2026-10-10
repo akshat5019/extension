@@ -9,29 +9,33 @@ The extension has four trust-separated components:
 
 `src/core/documents.ts` orchestrates local PDF/DOCX reads and a cancellable parsing worker. `src/document-worker.ts` reads TXT/CSV/XLSX/JSON. `extraction.ts` separates records; `mapping.ts` implements `FieldMapper`; `ai.ts` implements optional `IntelligenceService` using an opt-in on-device model. Browser APIs are confined to orchestration/UI and background/content boundaries. Existing local parsing libraries are bundled; no CDN scripts are loaded.
 
+Extension pages and the document worker use packaged ES modules with format-specific dynamic imports. PDF.js, Mammoth and ExcelJS are loaded only for their respective formats; standard DOCX extraction runs in the document worker. With optional on-device AI, Word text extraction precedes the model call in the UI. The original buffer is read/hashed once and reused/transferred; extracted PDF text is sent without re-transferring its detached binary buffer. Background/content remain standalone classic bundles. Packaging checks the complete module output graph. No remote scripts or new browser permissions are needed.
+
 `pdf-layout.ts` reconstructs horizontal text lines from page coordinates, rejoins adjacent glyph fragments and separates wide columns. It sends temporary prominent heading hints to the extraction worker. `name-detection.ts` excludes common job/section titles and uses a heading or nearby contact identity to suggest a resume name. Hints only apply to names present in the current record, and conflicting identifiers suppress header inference. Ambiguous candidate names are presented as bounded selectable suggestions in the reviewed import UI; they never trigger a database write or merge. No filename/email-derived names are generated. Geometric/font heuristics are not proof of identity, and unusual or rotated layouts still require source review.
 
 `resume-contact.ts` reconstructs pipe/bullet/tab contact rows and separate-line labels without losing explicit record/page boundaries. Personal location parsing uses local browser ICU country names/aliases. Unlabelled inference stays within the first 12 contact-header lines before a resume section and requires an unambiguous contact identity. Labelled table locations can be parsed independently. Generic location labels outside a free-form contact header are withheld, and any conflict blocks derived location additions as a group. Missing countries are never inferred from phone numbers or employers. Extraction feeds the same canonical profile keys and reviewed import transaction; no additional storage schema, network service or website access is introduced.
 
 ## Database and schema
 
-Database `personal-assist-v2`, IndexedDB version 1:
+Database `personal-assist-v2`, IndexedDB version 2:
 
 | Store | Keys/indexes | Contents |
 | --- | --- | --- |
-| profiles | id, updatedAt, status, multi-entry searchTokens | Person fields, sources, timestamps, revision and schemaVersion |
+| profiles | id, updatedAt, status, multi-entry searchTokens and identityKeys | Person fields, sources, timestamps, revision and schemaVersion |
 | documents | id, unique fingerprint, importedAt | File reference/name, hash, import count and warnings; no raw bytes |
 | settings | key | Version/migration markers and legacy answer archive |
 
 `Person.fields` is a validated flexible dictionary of strings or alternate arrays. Known fields use canonical keys; additional fields use `custom:<normalized label>`. Sensitive/prototype keys are removed at the storage boundary. Multiple values intentionally do not silently choose a winner during autofill. Sources list document/manual-edit provenance and affected field keys with timestamps, capped at the latest 100 source entries. Revision numbers enforce optimistic concurrency.
 
-Search normalizes Unicode/case and indexes character n-grams (lengths 1–3) across a bounded searchable projection, including digits-only phone variants. Queries use an IndexedDB index and verify matching rows with a cursor filter; only the requested page is returned. The interface renders 20 rows, never every profile. Frequent short queries may scan many matching index candidates to count results, but do not materialize the full dataset in the UI. Export is a separately confirmed full-dataset operation. Potential duplicate hints are bounded to 50 candidate results per identifier; they never cause an automatic merge.
+Search normalizes Unicode/case and indexes character n-grams (lengths 1–3) across a bounded searchable projection, including digits-only phone variants. It samples prefix/middle/suffix index counts, chooses the least frequent gram, then verifies full substrings and counts matches in one cursor pass, retaining only the requested page. Empty queries use native count and paged date ordering. The interface renders 20 rows, never every profile. Frequent short queries still scan many matching candidates for an exact total. Initial/pagination/refresh searches run immediately; typing is debounced and obsolete responses/errors are ignored.
+
+Duplicate review uses derived `identityKeys` for exact normalized email, phone, phone-tail and complete display name. Names remain potential matches and never trigger a merge. Lookups are independently bounded to 50 results per key so strong identifiers are not lost behind common names. `analyze` runs eight records at a time in a read snapshot, with a request-scoped cache of up to 256 lookup promises. This cache is discarded after each batch; edits/deletes never reuse stale profile values. Both index projections are omitted from JSON exports. Export remains a separately confirmed full-dataset operation.
 
 Import is staged in UI memory. Confirmation runs a single transaction over profile/document stores; any stale revision or unresolved conflict aborts all writes. File SHA-256 fingerprints prevent repeated commits. Reloading during staging loses only the staged draft; interrupted transactions cannot leave a half-import. Repeated updates to the same target in one batch can produce a stale-revision error: consolidate the records or split into reviewed batches.
 
 ## Replace or supplement local storage
 
-1. Implement the methods of `ProfileRepository` in a remote adapter: `search`, `get`, `save`, `remove`, `matches`, `merge`, `all`, `stats`, `clear`, `getSetting`, `migrateLegacy` and `commitImport`. Imports and legacy migration are part of the same repository contract; background code does not depend on Dexie tables or transactions.
+1. Implement the methods of `ProfileRepository` in a remote adapter: `search`, `get`, `save`, `remove`, `matches`, `analyze`, `merge`, `all`, `stats`, `clear`, `getSetting`, `migrateLegacy` and `commitImport`. `analyze` preserves input order and returns reviewed match hints, without merging. Imports and legacy migration are part of the same repository contract; background code does not depend on Dexie tables or transactions.
 2. Inject the adapter at the composition point in `background.ts`; keep UI's versioned `DB_*` messages stable. Do not give content scripts access to credentials or repository queries.
 3. Preserve UUID profile IDs, schemaVersion, created/updated timestamps and expected revision checks. Enforce field validation on the server too. Map multi-record import/merge to server transactions and idempotency keys.
 4. Translate indexed paginated search into the server's full-text/trigram/phone indexes. Keep page sizes bounded. Preserve potential-match review; never merge by name alone.
@@ -42,7 +46,7 @@ A repository adapter must preserve transactions and conflict semantics, not mere
 
 ## Versioning and migration
 
-The profile envelope and JSON export carry `schemaVersion: 1`. For a future schema change, add a Dexie `version(2).stores(...).upgrade(...)` migration and a corresponding export/import version converter. Migrations should be idempotent, transactional, validated and tested against old databases/backups. Current JSON import stages fields into new candidate profiles, with duplicates reviewed; it does not blindly replace the database or reuse foreign IDs.
+The profile envelope and JSON export carry `schemaVersion: 1`. Database version 2 transactionally adds/rebuilds `identityKeys` while preserving IDs, revisions, fields, sources, timestamps, documents and settings; the migration is tested against a version 1 database. For a future database change, add Dexie `version(3).stores(...).upgrade(...)`. A data-envelope change also needs an export/import version converter. Migrations should be idempotent, transactional, validated and tested against old databases/backups. Current JSON import stages fields into new candidate profiles, with duplicates reviewed; it does not blindly replace the database or reuse foreign IDs.
 
 The 1.x upgrade is a one-time guarded transaction: the old single Chrome-storage profile becomes a review-needed person. Generic old answers are archived in settings and exports. Existing automatic registrations are retired. Future schema upgrades must keep this archive or offer an explicit reviewed conversion. Backups are JSON and include full profile envelopes/sources; reimport currently creates new source references to the backup and restores fields, rather than replaying arbitrary historical metadata.
 

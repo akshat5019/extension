@@ -19,11 +19,19 @@ for (const path of [
   "docs/COMPATIBILITY.md",
   "docs/ARCHITECTURE.md",
   "docs/TESTING.md",
+  "docs/PERFORMANCE.md",
 ])
   files[path] = new Uint8Array(await readFile(path));
 const bytes = zipSync(files, { level: 6 });
 const checked = unzipSync(bytes);
 const manifest = JSON.parse(strFromU8(checked["manifest.json"]));
+// Lazy modules are core functionality: validate the complete built output graph.
+const meta = JSON.parse(await readFile(".test-core/build-meta.json", "utf8"));
+for (const [path, output] of Object.entries(meta.outputs)) {
+  const entry = relative("dist", path).replaceAll("\\", "/");
+  if (!checked[entry] || checked[entry].length !== output.bytes)
+    throw new Error(`Package missing or truncated module ${entry}`);
+}
 for (const path of [
   "popup.html",
   "manager.html",
