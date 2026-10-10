@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import { db, form } from "./api";
+import type { ImportSummary } from "../core/repository";
 import {
   BASE_FIELDS,
   LABELS,
@@ -271,8 +272,8 @@ function App() {
       `Selected ${personName(p.fields)}. Existing page values will be preserved.`,
     );
   }
-  async function scanPage() {
-    if (!selected) throw new Error("Search for and select a person first.");
+  async function scanPage(person = selected) {
+    if (!person) throw new Error("Search for and select a person first.");
     if (!tab?.id || !/^https?:\/\//.test(tab.url || ""))
       throw new Error(
         "Open a normal website form, then open this extension. Browser-internal pages are protected.",
@@ -282,6 +283,10 @@ function App() {
       files: ["content.js"],
     });
     const result = await form(tab.id, "SCAN");
+    if (new URL(result.url).origin !== new URL(tab.url!).origin)
+      throw new Error(
+        "The application changed websites. Reopen the extension on the intended application.",
+      );
     setScan(result);
     setAnswers({});
     setFillReport([]);
@@ -294,18 +299,23 @@ function App() {
     );
     return result;
   }
-  async function fill(snapshot = scan, providedAnswers = answers) {
-    if (!selected || !snapshot || !tab?.id)
+  async function fill(
+    snapshot = scan,
+    providedAnswers = answers,
+    person = selected,
+    personal = includePersonal,
+  ) {
+    if (!person || !snapshot || !tab?.id)
       throw new Error("Select a person and scan this page first.");
-    const latest = await db<Person>("GET", { id: selected.id });
-    if (!latest || latest.revision !== selected.revision)
+    const latest = await db<Person>("GET", { id: person.id });
+    if (!latest || latest.revision !== person.revision)
       throw new Error("Profile changed. Select it again before filling.");
     const result = await form(tab.id, "FILL", {
       scanId: snapshot.scanId,
-      profileId: selected.id,
-      fields: selected.fields,
+      profileId: person.id,
+      fields: person.fields,
       answers: providedAnswers,
-      includePersonal,
+      includePersonal: personal,
     });
     setScan({ ...snapshot, fields: result.fields });
     setFillReport(result.results);
@@ -322,17 +332,72 @@ function App() {
           providedAnswers[f.id];
     if (Object.keys(proposed).length) {
       setLearning(proposed);
-      setLearningPerson(selected);
+      setLearningPerson(person);
       setLearningChoices({});
     }
     setNotice(
-      `Filled ${result.results.filter((r: any) => r.filled).length} fields for ${personName(selected.fields)}. Review the page and submit manually. New answers are not saved until you confirm.`,
+      `Filled ${result.results.filter((r: any) => r.filled).length} fields for ${personName(person.fields)}. Review the page and submit manually. New answers are not saved until you confirm.`,
     );
   }
-  async function quickFill() {
-    const current = await scanPage();
+  async function quickFill(person = selected, personal = includePersonal) {
+    const current = await scanPage(person);
     // Always create a fresh page snapshot and perform the same revision check.
-    await fill(current, {});
+    await fill(current, {}, person, personal);
+  }
+  const importPeople = rows
+    .map((row, index) => ({ row, index }))
+    .filter(({ row }) => row.action && row.action !== "skip");
+  const importPerson = importPeople.length === 1 ? importPeople[0] : undefined;
+  const canFillApplication = !!tab?.id && /^https?:\/\//.test(tab.url || "");
+  async function confirmImport(fillRecord?: number) {
+    if (!reviewed || rows.some((row) => !row.action))
+      throw new Error("Review all records before importing.");
+    if (
+      fillRecord !== undefined &&
+      (!importPerson ||
+        importPerson.index !== fillRecord ||
+        !canFillApplication)
+    )
+      throw new Error(
+        "Choose one reviewed person and open the extension from the application tab.",
+      );
+    const result = await db<ImportSummary>("IMPORT", {
+      fingerprint,
+      name: importName,
+      warnings,
+      records: rows.map((r) => ({
+        fields: cleanFields(r.fields),
+        action: r.action,
+        targetId: r.target?.id,
+        revision: r.target?.revision,
+        choices: r.choices,
+        review: r.warnings.length > 0,
+      })),
+    });
+    setRows([]);
+    setReviewed(false);
+    setRefresh((x) => x + 1);
+    const summary = `Import complete: ${result.created} created, ${result.updated} updated, ${result.review} need review, ${result.skipped} skipped.`;
+    setNotice(summary);
+    if (fillRecord === undefined) return;
+    // Saving succeeded even if permission, navigation or a form blocks filling.
+    try {
+      const receipt = result.profiles[fillRecord];
+      if (!receipt) throw new Error("The reviewed person was not saved.");
+      const person = await db<Person>("GET", { id: receipt.id });
+      if (!person || person.revision !== receipt.revision)
+        throw new Error(
+          "The imported profile changed. Select it again before filling.",
+        );
+      choose(person);
+      setView("autofill");
+      setIncludePersonal(false);
+      await quickFill(person, false);
+    } catch (error) {
+      setNotice(
+        `${summary} Autofill could not finish: ${error instanceof Error ? error.message : "Unknown error"} Your imported information is saved. Open the personal-details step and use Scan & fill to retry.`,
+      );
+    }
   }
   async function importFile(file: File) {
     setRows([]);
@@ -1183,31 +1248,29 @@ function App() {
                 I reviewed the person boundaries, values and duplicate
                 decisions.
               </label>
+              <p>
+                {importPerson
+                  ? `Confirm import & autofill will use ${personName(importPerson.row.fields)} on ${tab?.url || "the application tab"}. Existing values stay unchanged; review and submit the application manually.`
+                  : "For multiple people, confirm import first, then search and select the correct profile to fill."}
+                {!canFillApplication &&
+                  " To fill immediately, open this extension from a job application website tab."}
+              </p>
               <button
                 className="primary"
-                disabled={busy || !reviewed || rows.some((r) => !r.action)}
-                onClick={() =>
-                  run(async () => {
-                    const result = await db("IMPORT", {
-                      fingerprint,
-                      name: importName,
-                      warnings,
-                      records: rows.map((r) => ({
-                        fields: cleanFields(r.fields),
-                        action: r.action,
-                        targetId: r.target?.id,
-                        revision: r.target?.revision,
-                        choices: r.choices,
-                        review: r.warnings.length > 0,
-                      })),
-                    });
-                    setRows([]);
-                    setRefresh((x) => x + 1);
-                    setNotice(
-                      `Import complete: ${result.created} created, ${result.updated} updated, ${result.review} need review, ${result.skipped} skipped.`,
-                    );
-                  })
+                disabled={
+                  busy ||
+                  !reviewed ||
+                  rows.some((r) => !r.action) ||
+                  !importPerson ||
+                  !canFillApplication
                 }
+                onClick={() => run(() => confirmImport(importPerson!.index))}
+              >
+                Confirm import & autofill
+              </button>
+              <button
+                disabled={busy || !reviewed || rows.some((r) => !r.action)}
+                onClick={() => run(() => confirmImport())}
               >
                 Confirm import
               </button>

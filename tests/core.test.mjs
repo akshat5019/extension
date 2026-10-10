@@ -552,6 +552,48 @@ test("import commits atomically, rejects repeated documents and stale revisions"
   );
   assert.equal((await repository.get(p.id)).fields.email, "new@example.com");
 });
+test("import receipts identify exact created/updated profiles in input order, including skips", async () => {
+  const existing = await repository.save({
+    fullName: "Same Name",
+    email: "old@example.com",
+  });
+  const summary = await repository.commitImport(
+    "receipts",
+    "people.csv",
+    [
+      { action: "skip", fields: { fullName: "Ignored Person" } },
+      {
+        action: "create",
+        fields: { fullName: "Same Name", email: "new@example.com" },
+      },
+      {
+        action: "update",
+        fields: { city: "Pune" },
+        targetId: existing.id,
+        revision: existing.revision,
+      },
+    ],
+    [],
+  );
+  assert.equal(summary.created, 1);
+  assert.equal(summary.updated, 1);
+  assert.equal(summary.skipped, 1);
+  assert.equal(summary.profiles.length, 3);
+  assert.equal(summary.profiles[0], null);
+  assert.notEqual(summary.profiles[1].id, existing.id);
+  assert.equal(
+    (await repository.get(summary.profiles[1].id)).fields.email,
+    "new@example.com",
+  );
+  assert.deepEqual(summary.profiles[2], {
+    id: existing.id,
+    revision: existing.revision + 1,
+  });
+  assert.equal(
+    (await repository.get(summary.profiles[2].id)).fields.city,
+    "Pune",
+  );
+});
 test("conflict decisions and mapping avoid arbitrary or sensitive fields", () => {
   assert.equal(
     combine({ email: "old" }, { email: "new" }, { email: "keep" }).email,

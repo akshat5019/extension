@@ -26,6 +26,8 @@ export interface ImportSummary {
   updated: number;
   review: number;
   skipped: number;
+  // Input-aligned receipts identify the exact committed person; skipped rows are null.
+  profiles: ({ id: string; revision: number } | null)[];
 }
 export interface ProfileRepository {
   search(
@@ -340,7 +342,13 @@ export class LocalRepository extends Dexie implements ProfileRepository {
         throw new Error(
           "This exact document was already imported. No duplicate writes were made.",
         );
-      const summary = { created: 0, updated: 0, review: 0, skipped: 0 };
+      const summary: ImportSummary = {
+        created: 0,
+        updated: 0,
+        review: 0,
+        skipped: 0,
+        profiles: [],
+      };
       const at = new Date().toISOString(),
         documentId = crypto.randomUUID();
       for (const row of records) {
@@ -348,6 +356,7 @@ export class LocalRepository extends Dexie implements ProfileRepository {
           throw new Error("Every imported record requires a decision.");
         if (row.action === "skip") {
           summary.skipped++;
+          summary.profiles.push(null);
           continue;
         }
         let fields = cleanFields(row.fields);
@@ -357,12 +366,13 @@ export class LocalRepository extends Dexie implements ProfileRepository {
             throw new Error("An import target changed. Reopen import review.");
           fields = combine(old.fields, fields, row.choices || {});
         }
-        await this.save(fields, {
+        const saved = await this.save(fields, {
           id: row.action === "update" ? row.targetId : undefined,
           revision: row.revision,
           status: row.review ? "review" : "verified",
           source: { documentId, name, at, fields: Object.keys(row.fields) },
         });
+        summary.profiles.push({ id: saved.id, revision: saved.revision });
         summary[row.action === "create" ? "created" : "updated"]++;
         if (row.review) summary.review++;
       }

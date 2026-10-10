@@ -26,3 +26,9 @@ Observed in this cloud workspace:
 | Batch review of 50 records | Not measured | 13 ms |
 
 Startup JavaScript is about 72% smaller. These timings are synthetic observations, not a guarantee of Chrome latency or the same speedup on every device. Broad one-letter/name searches still need to count their matches. First use of a reader loads its bundled local module. The full package remains larger than startup code because it includes all readers, PDF assets and fonts. Native unpacked installation and authenticated portal latency require local Chrome testing.
+
+## Immediate resume-to-application flow
+
+Version 2.4.0 removes the separate selection and scan steps after a reviewed single-person import. **Confirm import & autofill** obtains the saved profile by its transaction receipt, reads and revision-checks that person, injects the existing detector, scans the current page and fills it immediately. No artificial debounce or delay is added to this action. Document extraction finishes before confirmation; upload/parse time is separate from filling time. Existing startup and indexed lookup optimizations remain.
+
+Completion within one second is a goal on simple forms, not a guarantee: document parsing, Chrome scheduling, site rendering, permissions, custom controls and missing values can take longer or require manual action. Tests verify the combined workflow and safety without flaky time limits. Multi-person imports require selection, and applications are submitted manually.

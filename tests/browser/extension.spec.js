@@ -238,6 +238,203 @@ async function seed() {
   await confirmImport();
 }
 
+async function confirmAndFill() {
+  await popup
+    .getByLabel(
+      "I reviewed the person boundaries, values and duplicate decisions.",
+    )
+    .check();
+  await popup
+    .getByRole("button", { name: "Confirm import & autofill", exact: true })
+    .click();
+}
+
+test("confirmed PDF import immediately fills the exact imported person instead of an older selection", async () => {
+  await seed();
+  await select("Priya Sharma");
+  await job.evaluate(() => {
+    document
+      .querySelector("form")
+      .insertAdjacentHTML(
+        "afterbegin",
+        '<label>First Name<input id="given"></label><label>Last Name<input id="family"></label><label>City<input id="city"></label>',
+      );
+    document.querySelector("#phone").value = "Already entered";
+  });
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const page = pdf.addPage();
+  [
+    "Name: Akshat Sharma",
+    "Email: akshat@example.com",
+    "Phone: 9999988888",
+    "City: Pune",
+    "Country: India",
+  ].forEach((line, i) =>
+    page.drawText(line, { x: 40, y: 740 - i * 24, size: 12, font }),
+  );
+  await upload("resume.pdf", await pdf.save());
+  await popup.getByLabel("Record decision").selectOption("create");
+  await expect(job.locator("#name")).toHaveValue("");
+  await expect(
+    popup.getByRole("button", {
+      name: "Confirm import & autofill",
+      exact: true,
+    }),
+  ).toBeDisabled();
+  await confirmAndFill();
+  await expect(popup.locator("#status")).toContainText(
+    "fields for Akshat Sharma",
+  );
+  for (const [id, value] of [
+    ["name", "Akshat Sharma"],
+    ["given", "Akshat"],
+    ["family", "Sharma"],
+    ["email", "akshat@example.com"],
+    ["city", "Pune"],
+    ["country", "IN"],
+    ["phone", "Already entered"],
+  ])
+    await expect(job.locator(`#${id}`)).toHaveValue(value);
+  await expect(job.locator("#bank")).toHaveValue("");
+  await expect(job.locator("#password")).toHaveValue("");
+  await expect(job.locator("#consent")).not.toBeChecked();
+  expect(await job.evaluate(() => window.submitted)).toBe(false);
+  await popup.getByLabel("Answer Home Address").fill("12 Resume Road");
+  await popup
+    .getByRole("button", { name: "Fill form", exact: true })
+    .last()
+    .click();
+  await popup
+    .getByRole("button", { name: "Confirm save to selected profile" })
+    .click();
+  await expect(popup.locator("#status")).toContainText("saved to Akshat");
+  const people = await popup.evaluate(
+    async () =>
+      (await chrome.runtime.sendMessage({ type: "DB_SEARCH", query: "" }))
+        .result.items,
+  );
+  expect(
+    people.find((p) => p.fields.email === "akshat@example.com").fields.address,
+  ).toBe("12 Resume Road");
+  expect(
+    people.find((p) => p.fields.email === "priya@example.com").fields.address,
+  ).toBeUndefined();
+  await popup.getByRole("button", { name: "Undo autofill" }).click();
+  await expect(job.locator("#name")).toHaveValue("");
+  await expect(job.locator("#phone")).toHaveValue("Already entered");
+});
+
+test("multiple imported people require selection; a single explicitly retained record uses its own receipt", async () => {
+  await upload("people.csv", csv);
+  await popup
+    .getByLabel(
+      "I reviewed the person boundaries, values and duplicate decisions.",
+    )
+    .check();
+  await expect(
+    popup.getByRole("button", {
+      name: "Confirm import & autofill",
+      exact: true,
+    }),
+  ).toBeDisabled();
+  await expect(job.locator("#name")).toHaveValue("");
+  await popup.getByLabel("Record decision").selectOption("skip");
+  await confirmAndFill();
+  await expect(job.locator("#name")).toHaveValue("Priya Sharma");
+  const stats = await popup.evaluate(
+    async () => (await chrome.runtime.sendMessage({ type: "DB_STATS" })).result,
+  );
+  expect(stats.total).toBe(1);
+  expect(await job.evaluate(() => window.submitted)).toBe(false);
+});
+
+test("a failed immediate fill preserves the import and supports retry without importing twice", async () => {
+  await upload(
+    "single.csv",
+    "Name,Email,Country\nJane Doe,jane@example.com,India",
+  );
+  await popup.evaluate(() => {
+    window.originalInject = chrome.scripting.executeScript;
+    chrome.scripting.executeScript = async () => {
+      throw new Error("Website access denied");
+    };
+  });
+  await confirmAndFill();
+  await expect(popup.locator("#status")).toContainText(
+    "Your imported information is saved",
+  );
+  await expect(popup.locator("#status")).toContainText("Website access denied");
+  await expect(job.locator("#name")).toHaveValue("");
+  expect(
+    await popup.evaluate(
+      async () =>
+        (await chrome.runtime.sendMessage({ type: "DB_STATS" })).result.total,
+    ),
+  ).toBe(1);
+  await popup.evaluate(() => {
+    chrome.scripting.executeScript = window.originalInject;
+  });
+  await popup.getByRole("button", { name: "Scan & fill", exact: true }).click();
+  await expect(job.locator("#name")).toHaveValue("Jane Doe");
+});
+
+test("reviewed duplicate update fills the committed revision rather than the previously selected person", async () => {
+  await seed();
+  const before = await popup.evaluate(
+    async () =>
+      (
+        await chrome.runtime.sendMessage({
+          type: "DB_SEARCH",
+          query: "rahul@example.com",
+        })
+      ).result.items[0],
+  );
+  await select("Priya Sharma");
+  await upload(
+    "rahul-update.csv",
+    "Name,Email,Address\nRahul Sharma,rahul@example.com,Updated Road",
+  );
+  await popup
+    .getByRole("button", { name: "Review update to this profile" })
+    .click();
+  await confirmAndFill();
+  await expect(job.locator("#name")).toHaveValue("Rahul Sharma");
+  await expect(job.locator("#address")).toHaveValue("Updated Road");
+  const after = await popup.evaluate(
+    async () =>
+      (
+        await chrome.runtime.sendMessage({
+          type: "DB_SEARCH",
+          query: "rahul@example.com",
+        })
+      ).result.items[0],
+  );
+  expect(after.id).toBe(before.id);
+  expect(after.revision).toBe(before.revision + 1);
+  expect(
+    await popup.evaluate(
+      async () =>
+        (await chrome.runtime.sendMessage({ type: "DB_STATS" })).result.total,
+    ),
+  ).toBe(2);
+});
+
+test("immediate import fill refuses a target that navigated to another website", async () => {
+  await upload("single.csv", "Name,Email\nJane Doe,jane@example.com");
+  await job.goto(url.replace("127.0.0.1", "localhost") + "/fixture");
+  await confirmAndFill();
+  await expect(popup.locator("#status")).toContainText("changed websites");
+  await expect(job.locator("#name")).toHaveValue("");
+  await expect(job.locator("#email")).toHaveValue("");
+  expect(
+    await popup.evaluate(
+      async () =>
+        (await chrome.runtime.sendMessage({ type: "DB_STATS" })).result.total,
+    ),
+  ).toBe(1);
+});
+
 test("keeps format readers unloaded during startup/CSV import and offers selected-person quick fill", async () => {
   const readerRequests = [];
   const track = (request) => {

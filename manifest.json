@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Personal Assist",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "Import documents into local person profiles, review information, and fill forms for the person you select.",
   "permissions": [
     "activeTab",
